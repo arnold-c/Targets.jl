@@ -20,10 +20,8 @@ hash_fn_method(
 )
 
 #%%
-@hash_fn_method(test_function(2))
-
-#%%
 @assert @hash_fn_method(test_function(2)) == hash_fn_method(test_function, 2)
+@assert @hash_fn_method(test_function(2, 3)) == hash_fn_method(test_function, 2, 3)
 
 #%%
 hash_df = DataFrames.DataFrame(
@@ -43,5 +41,7 @@ tar_target("test", test_function, 2)
 tar_target("test", test_function, 2)
 tar_read("test")
 
-tar_target("test", test_function, 3)
+tar_target("test3", test_function, 3)
 tar_read("test")
+tar_read("test3")
+

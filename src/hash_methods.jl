@@ -1,12 +1,11 @@
 # TODO: Fix to remove eval() call as doesn't work in a module
 macro hash_fn_method(expression::Expr, hex_output=true, sha=SHA.sha256)
     if Meta.isexpr(expression, :call)
-        hash_fn_method(
-            eval(expression.args[1]),
-            expression.args[2:end]...;
-            hex_output=hex_output,
-            sha=eval(sha)
-        )
+        esc(:(hash_fn_method(
+            $(expression.args...);
+            hex_output=$(hex_output),
+            sha=$(sha)
+        )))
     end
 end
 
