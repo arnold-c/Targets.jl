@@ -27,9 +27,8 @@ function tar_target(
             hash_df,
             output_hash
         )
-        @assert DataFrames.nrow(prev_output_hash) == 1
-        if prev_output_hash.fn_hashes == fn_hash && prev_output_hash.args_hashes == args_hash
-            println("$output_name already up to date. Skipping")
+        if prev_output_hash[1, :fn_hashes] == fn_hash && prev_output_hash[1, :args_hashes] == args_hash
+            println("Variabe `$output_name` already up to date. Skipping")
             return nothing
         end
         # Remove old hashes
@@ -51,6 +50,8 @@ function tar_target(
 
     # Update DF with hashes
     update_hash_DF!(hash_df, output_hash, fn_hash, args_hash)
+
+    save_hash_DF!(hash_df, meta_df_name, store, meta_path)
 
     return nothing
 end
