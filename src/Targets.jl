@@ -9,27 +9,36 @@ include("helpers.jl")
 export project_base
 
 include("types.jl")
-export AbstractSaveFormat, jld2
+export AbstractTargets, Target, AbstractSaveFormat, jld2
 
 include("hash_methods.jl")
 export @hash_fn_method,
-hash_fn_method,
-generic_hash
+    hash_fn_method,
+    generic_hash
 
 include("tar_target.jl")
-export tar_target
+export tar_target, @tar_target
 
 include("hash_df_funcs.jl")
 export load_hash_df,
-filter_hash_df_get_rownum,
-delete_outdated_hashes!,
-update_hash_DF!
+    filter_hash_df_get_rownum,
+    delete_outdated_hashes!,
+    update_hash_DF!
 
 include("tar_read.jl")
 export tar_read
 
+include("tar_list.jl")
+export @tar_list
+
+include("tar_dependency.jl")
+export hash_dependencies
+
+include("tar_make.jl")
+export tar_make
+
 @static if false
-	include("../test/hash.jl")
+    include("../test/hash.jl")
 end
 
 end

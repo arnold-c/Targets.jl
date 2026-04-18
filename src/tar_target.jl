@@ -1,3 +1,24 @@
+macro tar_target(
+    target_name,
+    fn_call
+)
+    target_struct = :(Target($target_name))
+    target_hash = :(generic_hash($target_name))
+    fn_hash = :(@hash_fn_method($fn_call))
+    # vargs_hash = :(generic_hash())
+    deps_hash = :(generic_hash($(fn_call.args[2:end])))
+    # deps_hash = :($(fn_call.args[2:end]))
+
+    d = :(Dict(
+        "target_name" => $(target_struct),
+        "target_hash" => $(target_hash),
+        "fn_hash" => $(fn_hash),
+        # "vargs_hash" => $(vargs_hash)
+        "dependencies_hash" => $(deps_hash)
+    ))
+    return esc(d)
+end
+
 function tar_target(
     output_name,
     fn,
