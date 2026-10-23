@@ -281,12 +281,30 @@ function __init__()
     push!(Base.include_callbacks, record_include)
 end
 
+# Lets tests pretend Revise is (not) loaded: JET, used in the same test processes,
+# loads Revise, which would otherwise switch the stale-session check off.
+const REVISE_OVERRIDE = Ref{Union{Nothing, Bool}}(nothing)
+
 function revise_loaded()
+    override = REVISE_OVERRIDE[]
+    override === nothing || return override
     return any(k -> k.name == "Revise", keys(Base.loaded_modules))
+end
+
+"Run `f()` as if Revise were (`assumed = true`) or were not loaded. For tests."
+function with_revise_assumed(f, assumed::Bool)
+    previous = REVISE_OVERRIDE[]
+    REVISE_OVERRIDE[] = assumed
+    try
+        return f()
+    finally
+        REVISE_OVERRIDE[] = previous
+    end
 end
 
 "Bring a loaded Revise up to date so that loaded code matches the files on disk."
 function maybe_revise()
+    revise_loaded() || return nothing
     for (id, mod) in Base.loaded_modules
         id.name == "Revise" && return Base.invokelatest(getproperty(mod, :revise))
     end
@@ -471,8 +489,13 @@ end
         Base.include(Module(:Fixture), path)
         @test isempty(stale_files([path]))
         write(path, "h(x) = 2\n")
-        @test stale_files([path]) == [path]
-        @test_throws "Revise" check_stale_session([path])
+        Targets.with_revise_assumed(false) do
+            @test stale_files([path]) == [path]
+            @test_throws "Revise" check_stale_session([path])
+        end
+        Targets.with_revise_assumed(true) do
+            @test isempty(stale_files([path])) # Revise keeps loaded code current
+        end
         Base.include(Module(:Again), path) # reloading clears it
         @test isempty(stale_files([path]))
         @test isempty(stale_files([joinpath(dir, "never_loaded.jl")]))

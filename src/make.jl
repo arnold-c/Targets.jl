@@ -718,7 +718,13 @@ end
             path,
             "h(x) = x + 2\np = tar_pipeline(target(:a, () -> h(1)))\n",
         ) # edited, not reloaded
-        @test_throws "Revise" run()
+        Targets.with_revise_assumed(false) do
+            @test_throws "Revise" run()
+        end
+        Targets.with_revise_assumed(true) do
+            # with Revise the check is off
+            @test run() isa BuildSummary
+        end
         @test run(; check_stale = false) isa
             BuildSummary # opting out hashes the new file anyway
     end

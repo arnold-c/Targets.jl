@@ -67,9 +67,9 @@ Keep the package as a handful of small, separately testable files, each owning o
 | `src/graph.jl` | Layered layout and `tar_dot()` |
 | `src/testing.jl` | `@testmodule` fixtures shared by scenario tests (throwaway projects) |
 | `src/macros.jl` | `@pipeline` / `@target` sugar (last phase) |
-| `ext/TargetsGraphMakieExt.jl` | `tar_visnetwork()` plotting, loaded only when GraphMakie is |
+| `ext/TargetsMakieExt.jl` | `tar_visnetwork()` drawing with plain Makie primitives, loaded when any Makie backend is |
 
-**Dependencies.** Hard: JLD2.jl, Graphs.jl, CodeTracking.jl, JuliaSyntax.jl, TestItems.jl (its `@testitem` macro expands to nothing outside the test runner), and the stdlibs SHA, TOML, Dates, Serialization. Weak, through package extensions: GraphMakie.jl (and a Makie backend chosen by the user). Recommend Revise.jl to users, since CodeTracking finds REPL-defined methods only when Revise is loaded. `tar_meta()` and `tar_manifest()` return a `Vector` of `NamedTuple`s, which is Tables.jl-compatible, so DataFrames is not a dependency.
+**Dependencies.** Hard: JLD2.jl, Graphs.jl, CodeTracking.jl, JuliaSyntax.jl, TestItems.jl (its `@testitem` macro expands to nothing outside the test runner), and the stdlibs SHA, TOML, Dates, Serialization. Weak, through one package extension: Makie.jl (any backend the user loads, e.g. CairoMakie). GraphMakie was tried as well (first as a requirement, then as a second `engine`) and dropped: the layout, colours, labels and edges are computed here as `NetworkData`, so plain Makie scatter, arrows and text draw the same picture, and a second engine only cost a dependency, an extension and slow tests. Arrow ends are shortened by a fixed number of *pixels* (converted through the axis limits and figure size), not data units. Recommend Revise.jl to users, since CodeTracking finds REPL-defined methods only when Revise is loaded. `tar_meta()` and `tar_manifest()` return a `Vector` of `NamedTuple`s, which is Tables.jl-compatible, so DataFrames is not a dependency.
 
 **Decision: package extensions for visualization.** Makie is heavy to load. Putting plotting in `ext/` keeps `using Targets` fast and means headless servers never pay for it. A Graphviz DOT export (`tar_dot()`) lives in the core, since it is plain string output.
 
@@ -336,7 +336,7 @@ Once the core works, the helpers are thin wrappers over the store and the stalen
 | `tar_prune()` | Delete objects and records for targets no longer in the pipeline (including renamed ones) |
 | `tar_destroy()` | Delete the whole store, after a confirmation prompt |
 | `tar_dot(; names = nothing)` | Graphviz DOT text of the DAG or a subgraph, colored by status |
-| `tar_visnetwork(; names = nothing)` | Plot of the DAG or a subgraph (GraphMakie extension) |
+| `tar_visnetwork(; names = nothing)` | Plot of the DAG or a subgraph (Makie extension) |
 
 **Decision: `@tar_load` is a macro, not a function that writes into `Main`.** A macro expands to `model = tar_read(:model)` in the caller's own scope, which works inside functions, modules and tests.
 
@@ -346,7 +346,7 @@ Once the core works, the helpers are thin wrappers over the store and the stalen
 
 **Decision: subgraphs by name.** `tar_visnetwork(names = [:model])` and `tar_dot(names = [:model])` show the named targets and their ancestors (the same `ancestors` helper as subset builds), which is the original `tar_glimpse` idea. A `descendants = true` keyword adds everything downstream of the named targets, for answering "what does this feed into?". `names = nothing` shows the whole pipeline.
 
-**Decision: compute the layout yourself, by layers.** Assign each target a layer equal to its longest-path depth from any root within the displayed subgraph, place layers left to right, and order targets within a layer by declaration order (later, by a barycenter pass to reduce crossings). This needs no extra dependency and is shared by `tar_dot()` (as `rank` hints) and `tar_visnetwork()` (as explicit node positions passed to GraphMakie).
+**Decision: compute the layout yourself, by layers.** Assign each target a layer equal to its longest-path depth from any root within the displayed subgraph, place layers left to right, and order targets within a layer by declaration order (later, by a barycenter pass to reduce crossings). This needs no extra dependency and is shared by `tar_dot()` (as `rank` hints) and `tar_visnetwork()` (as explicit node positions for Makie).
 
 **Encoding.** Color nodes by status: up to date, outdated, errored, and not yet built. Use a distinct shape for file targets and show branch counts in the label of branching targets (`fits [24]`). Reserve a `targets_only = true` keyword for later showing user functions as nodes.
 
@@ -512,6 +512,6 @@ M0–M5 are implemented, each as its own revision with its tests green (`juliati
 | `Base.method_argnames` changes in a Julia release | Dependency inference breaks | One isolated helper, CI on LTS and latest (Phase 1) |
 | Recursive hashing or large globals slow on large codebases | Slow no-op runs | Per-run memoization; later, a per-file hash cache keyed by modification time |
 
-**Registry check (done during M5): the name `Targets` is taken.** A package called `Targets.jl` (codedthinking/Targets.jl, a small `@target`/`@get` memoisation package with a different design) is already registered, so this package must be renamed before it can be registered. The name appears in `Project.toml`, `src/Targets.jl`, the extension `TargetsGraphMakieExt`, the tests and the README; a rename is a mechanical find-and-replace plus a new UUID.
+**Registry check (done during M5): the name `Targets` is taken.** A package called `Targets.jl` (codedthinking/Targets.jl, a small `@target`/`@get` memoisation package with a different design) is already registered, so this package must be renamed before it can be registered. The name appears in `Project.toml`, `src/Targets.jl`, the extension `TargetsMakieExt`, the tests and the README; a rename is a mechanical find-and-replace plus a new UUID.
 
 The existing package's design is lighter: it re-evaluates a target when its dependencies or a redefined function change, and keeps values in the session. It is a useful contrast for the README, but there is nothing in it to borrow for the on-disk store, hashing or branching.

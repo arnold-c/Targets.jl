@@ -107,11 +107,15 @@ Targets developed into it, ready to `activate` and `tar_make()`.
 """
 function demo_setup(dir::AbstractString = demo_dir())
     write_demo(dir)
-    if !isfile(joinpath(dir, "Manifest.toml"))
+    # Always (re)resolve: the Manifest records Targets' dependencies and extensions,
+    # which go stale whenever the package's Project.toml changes.
+    let
         previous = Base.active_project()
         try
             Pkg.activate(dir; io = devnull)
-            Pkg.develop(; path = dirname(@__DIR__))
+            isfile(joinpath(dir, "Manifest.toml")) ?
+                Pkg.resolve() :
+                Pkg.develop(; path = dirname(@__DIR__))
             Pkg.add("CairoMakie")
         finally
             previous === nothing ?

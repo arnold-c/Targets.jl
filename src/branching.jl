@@ -501,7 +501,7 @@ end
             ]
         m, _ = load_source(grid_code(); dir)
         p = Base.invokelatest(getproperty, m, :p)
-        dot = tar_dot(p; store = joinpath(dir, "_targets"), root = dir)
+        dot = string(tar_dot(p; store = joinpath(dir, "_targets"), root = dir))
         @test occursin("label=\"fits [3]\"", dot)
         @test !occursin("label=\"summary [", dot)
     end

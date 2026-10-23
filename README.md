@@ -134,8 +134,8 @@ explanation rather than record the wrong hashes. Load Revise, restart, or use
 | `tar_delete(names = [:a])` | Delete a target's object and metadata |
 | `tar_prune()` | Delete stored targets no longer in the pipeline |
 | `tar_destroy()` | Delete the whole store (asks first) |
-| `tar_dot(; names, descendants)` | Graphviz DOT, optionally for a sub-graph |
-| `tar_visnetwork(; names, descendants)` | Plot (needs `using GraphMakie, CairoMakie`) |
+| `tar_dot(; names, descendants)` | Graphviz DOT, optionally for a sub-graph; renders as SVG in notebooks if Graphviz is installed, `write("p.dot", tar_dot())` saves it |
+| `tar_visnetwork(; names, descendants)` | Plot (needs a Makie backend, e.g. `using CairoMakie`) |
 
 ## Practical notes
 
