@@ -135,6 +135,12 @@ Base.:(==)(a::Record, b::Record) = all(
     for f in fieldnames(Record)
 )
 
+"A copy of `r` with some fields replaced."
+update(r::Record; changes...) = Record(; merge(
+    NamedTuple(f => getfield(r, f) for f in fieldnames(Record)),
+    NamedTuple(changes),
+)...)
+
 record_dict(r::Record) = Dict{String, Any}(
     string(f) => getfield(r, f)
     for f in fieldnames(Record)

@@ -17,8 +17,16 @@
     "Load `code` (which must define `p`) from `dir` and run `tar_make` on it with the store in `dir`."
     function build_source(code::AbstractString, dir::AbstractString; kwargs...)
         m, _ = load_source(code; dir)
-        return tar_make(m.p; store = joinpath(dir, "_targets"), io = devnull, kwargs...)
+        p = Base.invokelatest(
+            getproperty,
+            m,
+            :p,
+        ) # `m.p` was defined after this method was compiled
+        return tar_make(p; store = joinpath(dir, "_targets"), io = devnull, kwargs...)
     end
 
-    read_values(dir, names...) = map(n -> tar_read(n; store = joinpath(dir, "_targets")), names)
+    read_values(dir, names...) = map(
+        n -> tar_read(n; store = joinpath(dir, "_targets")),
+        names,
+    )
 end

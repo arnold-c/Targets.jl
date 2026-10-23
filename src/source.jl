@@ -6,7 +6,7 @@
 ## CodeTracking supplies the current location, which stays correct under Revise
 ## even when edits above a method have shifted its line.
 
-const PARSE_CACHE = Dict{String,Tuple{UInt,SyntaxNode}}()
+const PARSE_CACHE = Dict{String, Tuple{UInt, SyntaxNode}}()
 
 """
 Parse `path`, reusing the last parse while the file's contents are unchanged.

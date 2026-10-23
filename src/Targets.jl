@@ -1,6 +1,7 @@
 module Targets
 
 using CodeTracking: CodeTracking
+using Dates: Dates
 using Graphs: SimpleDiGraph, add_edge!, inneighbors, nv, outneighbors
 using JLD2: JLD2
 using JuliaSyntax:
@@ -32,5 +33,13 @@ include("hashing.jl")
 
 include("store.jl")
 export tar_meta
+
+include("outdated.jl")
+
+include("make.jl")
+export tar_make, BuildSummary
+
+include("api.jl")
+export tar_read
 
 end

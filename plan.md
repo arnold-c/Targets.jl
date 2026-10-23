@@ -304,7 +304,7 @@ end
 
 **Decision: `force` rebuilds the selection and all its dependencies.** `tar_make(names = [:model], force = true)` rebuilds `:model` and every ancestor of it, regardless of status; without `names` it rebuilds the whole pipeline. Descendants outside the selection are not built, but their recorded `dep_hashes` will be compared on the next run, so early cutoff still applies. This is the manual override for the known limits of 4.2 and for package updates (4.5).
 
-**Decision: structure the loop as a ready-queue scheduler, even single-threaded.** Keep a set of targets whose dependencies are all finished and pop from it in declaration order. In v1 this behaves exactly like walking the topological order; adding parallelism later means handing ready targets to `Threads.@spawn` workers instead of rewriting the loop.
+**Decision: structure the loop as a ready-queue scheduler, even single-threaded.** Keep a set of targets whose dependencies are all finished and pop from it in declaration order. In v1 this behaves exactly like walking the topological order; adding parallelism later means handing ready targets to `Threads.@spawn` workers instead of rewriting the loop. *Status: M1 walks `p.order` directly, which is equivalent; the loop body is already factored into `process!`/`build!` so the queue can be introduced in M3 without touching them.*
 
 **Decision: an in-memory value cache with reference counting.** When a target is built or loaded, keep its value in a `Dict{Symbol,Any}` with a count of how many downstream targets in this run still need it. Decrement after each consumer runs and drop the value at zero. Load from JLD2 only on a cache miss.
 
