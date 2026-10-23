@@ -51,6 +51,9 @@ include("graph.jl")
 export tar_dot, tar_visnetwork
 
 include("api.jl")
+
+include("macros.jl")
+export @pipeline, @target
 export tar_read, @tar_load, tar_manifest, tar_invalidate, tar_delete, tar_prune, tar_destroy
 
 end

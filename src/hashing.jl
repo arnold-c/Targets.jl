@@ -46,7 +46,10 @@ function command_hash(t::Target)
         method_hash(single_method(t.f, t.name)) :
         CommandHash(canonical_hash(t.source), :source)
     own.hash === nothing && return own
-    return CommandHash(canonical_hash((own.hash, closure_captures(t.f))), own.kind)
+    return CommandHash(
+        canonical_hash((own.hash, closure_captures(t.f), t.format, t.pattern)),
+        own.kind,
+    )
 end
 
 ## Values and files
