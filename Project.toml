@@ -1,7 +1,7 @@
 name = "Targets"
 uuid = "ccd79084-dcf1-4aa0-8fea-6744ff5e7af6"
-authors = ["Callum Arnold <24391445+arnold-c@users.noreply.github.com> and contributors"]
 version = "1.0.0-DEV"
+authors = ["Callum Arnold <24391445+arnold-c@users.noreply.github.com> and contributors"]
 
 [deps]
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
@@ -13,7 +13,9 @@ JuliaFormatter = "98e50ef6-434e-11e9-1051-2b60c6c9e899"
 MetaGraphsNext = "fa8bd995-216d-47f1-8a91-f3b68fbeb377"
 SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
+TestItems = "1c621080-faea-4a02-84b6-bbd5e436b8fe"
 UnPack = "3a884ed6-31ef-47d7-9d2a-63182c4928ed"
 
 [compat]
+TestItems = "1.1.0"
 julia = "1.6.7"
