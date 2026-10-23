@@ -12,7 +12,9 @@ canonical_bytes(x) = (io = IOBuffer(); write_canonical(io, x); take!(io))
 canonical_hash(x) = bytes2hex(SHA.sha256(canonical_bytes(x)))
 
 # Hex SHA-256 of a collection of already-computed hashes or strings, order-independent.
-combine_hashes(hashes) = bytes2hex(SHA.sha256(join(sort!(collect(String, hashes)), "\n")::String))
+combine_hashes(hashes) = bytes2hex(SHA.sha256(
+    join(sort!(collect(String, hashes)), "\n")::String,
+))
 
 function write_tagged(io::IO, tag::Char, payload::AbstractString)
     write(io, UInt8(tag))
