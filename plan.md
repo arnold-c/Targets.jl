@@ -136,10 +136,12 @@ struct Pipeline
     track::Vector{Any}                # extra Modules or paths treated as user code (Phase 4.2)
 end
 
-pipeline(ts...; track = []) = Pipeline(flatten_targets(ts), track)
+tar_pipeline(ts...; track = []) = Pipeline(flatten_targets(ts), track)
 ```
 
-**Decision: `pipeline` flattens.** Arguments may be `Target`s or (nested) vectors of `Target`s, so comprehensions for static branching can be passed directly. Anything else is an error naming the offending argument.
+**Decision: the constructor is `tar_pipeline`, not `pipeline`.** `Base.pipeline` already exists (and is exported), so exporting a function of the same name makes `pipeline` ambiguous after `using Targets`. The macro `@pipeline` does not clash and keeps its name.
+
+**Decision: `tar_pipeline` flattens.** Arguments may be `Target`s or (nested) vectors of `Target`s, so comprehensions for static branching can be passed directly. Anything else is an error naming the offending argument.
 
 **Decision: where the pipeline is defined.** Mirror R's `_targets.R` with a `_targets.jl` file in the project root whose last expression returns a `Pipeline`. `tar_make()` with no arguments includes that file into a fresh anonymous module, then calls `tar_make(p::Pipeline)`. The fresh module avoids state leaking from the REPL between runs; the explicit `tar_make(p)` method stays available for tests and scripting.
 
@@ -213,7 +215,7 @@ Source is located in this order:
 
 1. **Macro targets** carry their right-hand side in `Target.source` (Phase 9); use it directly.
 2. **Named functions:** `CodeTracking.definition(Expr, m)`.
-3. **Anonymous functions and `do` blocks** (method name starting with `#`): CodeTracking re-parses from the start of the method's line, which fails or over-captures for lambdas inside a `pipeline(...)` call or a comprehension. Instead, parse `m.file` with JuliaSyntax (cached per run, keyed by path and modification time), collect every `->`, anonymous `function` and `do` node starting on `m.line`, and keep those whose argument names match `method_argnames(m)`. If exactly one remains, hash it. If several remain (two identical-signature lambdas on one line), hash all of them in source order: editing one rebuilds its line-mates, which is conservative and never stale.
+3. **Anonymous functions and `do` blocks** (method name starting with `#`): CodeTracking re-parses from the start of the method's line, which fails or over-captures for lambdas inside a `tar_pipeline(...)` call or a comprehension. Instead, parse `m.file` with JuliaSyntax (cached per run, keyed by path and modification time), collect every `->`, anonymous `function` and `do` node starting on `m.line`, and keep those whose argument names match `method_argnames(m)`. If exactly one remains, hash it. If several remain (two identical-signature lambdas on one line), hash all of them in source order: editing one rebuilds its line-mates, which is conservative and never stale.
 4. **Fallback: lowered code.** If no source can be located (methods created by `eval`, or a REPL without Revise), hash `code_lowered` with line information stripped and record `hash_source = "lowered"` in the metadata. Lowered code changes between Julia versions, so when `store.toml`'s Julia version differs from the running one, these targets (and only these) are outdated with reason `:julia_version_changed`. `tar_make` warns once per run, naming the targets that rely on the fallback.
 5. If even lowering fails, warn and treat the target as `cue = :always`, so the package is never silently wrong.
 
@@ -236,7 +238,7 @@ For each target, find every user-defined function, type and global its code can 
 **Decision: "user code" means files under the project root or under a tracked location.** A binding is user code when its defining file (a method's `file`, or for types and globals the file of the owning module's definition via `pathof`/`pkgdir`) lies under the directory of the active `Project.toml`, or under one of the pipeline's `track` entries. `track` accepts `Module`s (resolved with `pkgdir`) and directory paths, so a package `Pkg.develop`'d from elsewhere can be tracked:
 
 ```julia
-pipeline(targets...; track = [MyLabUtils, "../shared-code"])
+tar_pipeline(targets...; track = [MyLabUtils, "../shared-code"])
 ```
 
 Base, stdlibs and installed packages are not tracked; their changes are handled by 4.5.
@@ -401,7 +403,7 @@ The pattern argument (`grid`) is passed one element at a time; every other argum
 - The parent's metadata lists the branch ids in pattern order, and its `value_hash` is the hash of the ordered list of branch value hashes.
 - At the end of a successful run, delete objects and records for branches no longer in the pattern.
 
-**Static branching (`tar_map`) needs no special support.** Generate targets with a comprehension; `pipeline` flattens the vector (Phase 2), closure captures distinguish the generated targets (4.1), and explicit `deps` combines them (`tar_combine`, Phase 1).
+**Static branching (`tar_map`) needs no special support.** Generate targets with a comprehension; `tar_pipeline` flattens the vector (Phase 2), closure captures distinguish the generated targets (4.1), and explicit `deps` combines them (`tar_combine`, Phase 1).
 
 Done when: adding one element to the pattern builds exactly one new branch; editing one element rebuilds one branch chain; aggregate targets update when any branch changes; changing one value in a static-branching loop rebuilds only that target.
 
@@ -419,7 +421,7 @@ p = @pipeline begin
 end
 ```
 
-expands to `pipeline(target(:raw_file, () -> "data/raw.csv"; format = :file), target(:clean_data, (raw_file,) -> clean(...)), ...)`.
+expands to `tar_pipeline(target(:raw_file, () -> "data/raw.csv"; format = :file), target(:clean_data, (raw_file,) -> clean(...)), ...)`.
 
 **Decision: `@target` is only valid inside `@pipeline`.** `@pipeline` sees every target name in the block, so for each expression it collects the symbols that match those names and uses exactly those as the generated function's arguments. A bare `@target` errors with a message pointing to `@pipeline` or `target()`.
 
@@ -452,7 +454,7 @@ Core scenarios, each a test item:
 | Edit a used `const` global or struct definition | Its consumers |
 | Edit a function in a `track`ed external package | Its consumers |
 | Edit a function no target reaches | Nothing |
-| Edit one of two lambdas declared on separate lines of `pipeline(...)` | That target only |
+| Edit one of two lambdas declared on separate lines of `tar_pipeline(...)` | That target only |
 | Change a target's closure capture | That target and descendants |
 | Edit code so the output is unchanged | That target only (early cutoff) |
 | `force = true` with `names` | The named targets and all their ancestors |
