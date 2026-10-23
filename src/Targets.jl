@@ -34,10 +34,14 @@ include("hashing.jl")
 include("store.jl")
 export tar_meta
 
+include("codedeps.jl")
+
+include("manifest.jl")
+
 include("outdated.jl")
 
 include("make.jl")
-export tar_make, BuildSummary
+export tar_make, tar_outdated, BuildSummary
 
 include("api.jl")
 export tar_read

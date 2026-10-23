@@ -55,6 +55,13 @@ function open_store(root::AbstractString = default_store_path())
     return store
 end
 
+read_store_info(s::Store) = TOML.parsefile(joinpath(s.root, "store.toml"))
+
+write_store_info(s::Store, info::AbstractDict) = atomic_open(
+    io -> TOML.print(io, info),
+    joinpath(s.root, "store.toml"),
+)
+
 object_path(s::Store, key) = joinpath(s.root, "objects", string(key) * ".jld2")
 meta_path(s::Store, key) = joinpath(s.root, "meta", string(key) * ".toml")
 log_path(s::Store) = joinpath(s.root, "log", "progress.log")

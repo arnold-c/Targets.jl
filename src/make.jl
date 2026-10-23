@@ -34,19 +34,23 @@ struct BuildContext
     store::Store
     forced::Set{Symbol}
     io::IO
+    discovery::Discovery
     commands::Dict{Symbol, CommandHash}
+    codes::Dict{Symbol, String}
     values::Dict{Symbol, Any}
     value_hashes::Dict{Symbol, String}
     summary::BuildSummary
 end
 
-function BuildContext(p::Pipeline, store::Store, forced, io::IO)
+function BuildContext(p::Pipeline, store::Store, forced, io::IO, discovery::Discovery)
     return BuildContext(
         p,
         store,
         Set{Symbol}(forced),
         io,
+        discovery,
         Dict{Symbol, CommandHash}(),
+        Dict{Symbol, String}(),
         Dict{Symbol, Any}(),
         Dict{Symbol, String}(),
         BuildSummary(),
@@ -71,6 +75,11 @@ command_for!(ctx::BuildContext, t::Target) = get!(
     ctx.commands,
     t.name,
 )
+code_for!(ctx::BuildContext, t::Target) = get!(
+    () -> code_hash(ctx.discovery, t),
+    ctx.codes,
+    t.name,
+)
 
 function check_supported(p::Pipeline, names)
     for name in names
@@ -83,25 +92,45 @@ end
 
 "Warn once about targets whose code could only be hashed in a Julia-version-dependent way."
 function warn_weak_hashes(ctx::BuildContext, names)
-    lowered = [
-        n
-        for n in names
-        if command_for!(ctx, get_target(ctx.pipeline, n)).kind == :lowered
-    ]
-    unknown = [
-        n
-        for n in names
-        if command_for!(ctx, get_target(ctx.pipeline, n)).kind == :unknown
-    ]
+    kinds = Dict(n => command_for!(ctx, get_target(ctx.pipeline, n)).kind for n in names)
+    lowered = [n for n in names if kinds[n] == :lowered]
+    unknown = [n for n in names if kinds[n] == :unknown]
     isempty(lowered) ||
         @warn "no source found for these targets; their lowered code is hashed instead, so a Julia upgrade will rebuild them" targets = lowered
     isempty(unknown) ||
         @warn "the code of these targets cannot be hashed, so they are always rebuilt" targets = unknown
 end
 
+# Hash all code up front, so that problems are reported before anything is built.
+function prepare!(ctx::BuildContext, selected; check_stale::Bool)
+    maybe_revise()
+    for name in selected
+        t = get_target(ctx.pipeline, name)
+        command_for!(ctx, t)
+        code_for!(ctx, t)
+    end
+    check_stale && check_stale_session(ctx.discovery.files)
+    warn_weak_hashes(ctx, selected)
+end
+
+# Returns the names to force: all of them if the Manifest changed and the user asked for that.
+function manifest_forced(store::Store, root::AbstractString, selected, track_manifest::Bool)
+    changes = manifest_changes(store, root)
+    changes === nothing && return Symbol[]
+    summary = isempty(changes) ? "no package versions changed" : join(changes, "; ")
+    if track_manifest
+        @info "the Manifest changed ($summary); rebuilding everything"
+        return selected
+    end
+    @warn "the Manifest changed since the last build ($summary); results may be stale. " *
+        "Rebuild with tar_make(force = true), tar_invalidate(), or set track_manifest = true."
+    return Symbol[]
+end
+
 """
     tar_make(p::Pipeline; names = nothing, force = false, store = default_store_path(),
-             keep_going = false, io = stdout)
+             root = nothing, keep_going = false, track_manifest = false,
+             check_stale = true, io = stdout)
 
 Build the targets of `p` that are outdated, in dependency order, and return a
 [`BuildSummary`](@ref). With `names`, only those targets and everything they
@@ -109,24 +138,40 @@ depend on are considered. With `force = true`, all of those are rebuilt whatever
 their status. An error stops the run and is rethrown, unless `keep_going` is
 set, in which case independent targets are still built and the failure is
 reported in the summary.
+
+`root` is the project directory whose code counts as user code (default: the
+active project); `p.track` adds more. When the Manifest changes, a warning
+names the packages that moved, or with `track_manifest = true` everything is
+rebuilt. With `check_stale`, the run errors if a tracked source file changed on
+disk after this session loaded it (unless Revise is loaded), since the hashes
+would then describe code the session is not running.
 """
 function tar_make(
     p::Pipeline;
     names = nothing,
     force::Bool = false,
     store::Union{Store, AbstractString} = default_store_path(),
+    root::Union{Nothing, AbstractString} = nothing,
     keep_going::Bool = false,
+    track_manifest::Bool = false,
+    check_stale::Bool = true,
     io::IO = stdout,
 )
+    rootdir = something(root, project_root())
     s = store isa Store ? store : open_store(store)
     selected = selected_order(p, names)
     check_supported(p, selected)
-    ctx = BuildContext(p, s, force ? selected : Symbol[], io)
-    warn_weak_hashes(ctx, selected)
+    ctx = BuildContext(p, s, Symbol[], io, Discovery(user_roots(rootdir, p.track)))
+    prepare!(ctx, selected; check_stale)
+    union!(
+        ctx.forced,
+        force ? selected : manifest_forced(s, rootdir, selected, track_manifest),
+    )
     for name in selected
         process!(ctx, get_target(p, name); keep_going)
     end
     sm = ctx.summary
+    isempty(sm.errored) && record_manifest!(s, rootdir)
     log!(
         ctx,
         "summary: $(length(sm.built)) built, $(length(sm.skipped)) up to date, " *
@@ -135,16 +180,10 @@ function tar_make(
     return sm
 end
 
-"""
-    tar_make(; script = joinpath(project_root(), "_targets.jl"), kwargs...)
+default_script() = joinpath(project_root(), "_targets.jl")
 
-Load `script` into a fresh module (so no state leaks from the REPL between
-runs) and build the [`Pipeline`](@ref) its last expression returns.
-"""
-function tar_make(;
-    script::AbstractString = joinpath(project_root(), "_targets.jl"),
-    kwargs...,
-)
+"Load a pipeline script into a fresh module, so no state leaks from the REPL between runs."
+function load_pipeline(script::AbstractString)
     isfile(script) || error("no pipeline script at $script")
     m = Module(:TargetsScript)
     Core.eval(m, :(using Targets))
@@ -153,8 +192,19 @@ function tar_make(;
         error(
             "$script must end with a `tar_pipeline(...)` call, but returned `$(typeof(p))`",
         )
-    return tar_make(p; kwargs...)
+    return p
 end
+
+"""
+    tar_make(; script = joinpath(project_root(), "_targets.jl"), kwargs...)
+
+Load `script` into a fresh module and build the [`Pipeline`](@ref) its last
+expression returns.
+"""
+tar_make(; script::AbstractString = default_script(), kwargs...) = tar_make(
+    load_pipeline(script);
+    kwargs...,
+)
 
 function process!(ctx::BuildContext, t::Target; keep_going::Bool)
     sm = ctx.summary
@@ -165,19 +215,35 @@ function process!(ctx::BuildContext, t::Target; keep_going::Bool)
         return nothing
     end
     cmd = command_for!(ctx, t)
+    code = code_for!(ctx, t)
     dep_hashes = Dict{Symbol, String}(d => ctx.value_hashes[d] for d in t.deps)
-    reason = outdated_reason(ctx.store, t, cmd, dep_hashes; forced = t.name in ctx.forced)
+    reason = outdated_reason(
+        ctx.store,
+        t,
+        cmd,
+        code,
+        dep_hashes;
+        forced = t.name in ctx.forced,
+    )
     if reason === nothing
         ctx.value_hashes[t.name] = stored_value_hash(ctx.store, t.name)
         push!(sm.skipped, t.name)
         log!(ctx, "· $(t.name) up to date")
     else
-        build!(ctx, t, cmd, dep_hashes, reason; keep_going)
+        build!(ctx, t, cmd, code, dep_hashes, reason; keep_going)
     end
     return nothing
 end
 
-function build!(ctx::BuildContext, t::Target, cmd, dep_hashes, reason; keep_going::Bool)
+function build!(
+    ctx::BuildContext,
+    t::Target,
+    cmd,
+    code,
+    dep_hashes,
+    reason;
+    keep_going::Bool,
+)
     log!(ctx, "▶ $(t.name) ($reason)")
     started = time_ns()
     try
@@ -191,6 +257,7 @@ function build!(ctx::BuildContext, t::Target, cmd, dep_hashes, reason; keep_goin
             t.name,
             Record(;
                 command_hash = something(cmd.hash, ""),
+                code_hash = code,
                 hash_source = string(cmd.kind),
                 dep_hashes = Dict{String, String}(string(d) => h for (d, h) in dep_hashes),
                 value_hash = vhash,
@@ -382,5 +449,221 @@ end
         log = read(joinpath(dir, "_targets", "log", "progress.log"), String)
         @test occursin("▶ a (missing)", log)
         @test occursin("summary: 1 built", log)
+    end
+end
+
+@testitem "editing code a target reaches rebuilds exactly its consumers" setup = [
+    SourceFixtures,
+] begin
+    mktempdir() do dir
+        code(; helper = "x + 1", extra = "") = """
+        $extra
+        helper(x) = $helper
+        unused(x) = x
+        mid(x) = helper(x) * 2
+        p = tar_pipeline(
+            target(:a, () -> mid(1)),
+            target(:b, a -> a + 1),
+            target(:c, () -> 5),
+            target(:d, () -> mid(2)),
+        )
+        """
+        @test build_source(code(), dir).built == [:a, :b, :c, :d]
+        @test isempty(
+            build_source(code(; helper = "x +  1", extra = "# moved\n"), dir).built,
+        )
+        @test isempty(build_source(code(; extra = "unused(x) = x + 100"), dir).built)
+        s = build_source(code(; helper = "x + 2"), dir) # two calls deep
+        @test s.built == [:a, :b, :d]
+        @test s.skipped == [:c]
+    end
+end
+
+@testitem "adding a method or changing a global rebuilds consumers, with early cutoff" setup = [
+    SourceFixtures,
+] begin
+    mktempdir() do dir
+        code(; methods = "", alpha = "2") = """
+        const ALPHA = $alpha
+        h(x::Int) = x + ALPHA
+        $methods
+        p = tar_pipeline(
+            target(:a, () -> h(1)),
+            target(:b, a -> a * 10),
+        )
+        """
+        build_source(code(), dir)
+        s = build_source(
+            code(; methods = "h(x::String) = 0"),
+            dir,
+        ) # new method, same output
+        @test s.built == [:a]
+        @test s.skipped == [:b]
+        s = build_source(code(; methods = "h(x::String) = 0", alpha = "3"), dir)
+        @test s.built == [:a, :b]
+        @test read_values(dir, :b) == (40,)
+    end
+end
+
+@testitem "the stale-session guard stops a run on edited but unreloaded code" setup = [
+    SourceFixtures,
+] begin
+    mktempdir() do dir
+        m, path = load_source(
+            "h(x) = x + 1\np = tar_pipeline(target(:a, () -> h(1)))\n";
+            dir,
+        )
+        p = Base.invokelatest(getproperty, m, :p)
+        run(; kwargs...) = tar_make(
+            p;
+            store = joinpath(dir, "_targets"),
+            root = dir,
+            io = devnull,
+            kwargs...,
+        )
+        @test run().built == [:a]
+        write(
+            path,
+            "h(x) = x + 2\np = tar_pipeline(target(:a, () -> h(1)))\n",
+        ) # edited, not reloaded
+        @test_throws "Revise" run()
+        @test run(; check_stale = false) isa
+            BuildSummary # opting out hashes the new file anyway
+    end
+end
+
+@testitem "a changed Manifest warns, or rebuilds everything when asked" setup = [
+    SourceFixtures,
+] begin
+    mktempdir() do dir
+        manifest(version) = write(
+            joinpath(dir, "Manifest.toml"),
+            "manifest_format = \"2.0\"\n[[deps.Foo]]\nuuid = \"x\"\nversion = \"$version\"\n",
+        )
+        code = "p = tar_pipeline(target(:a, () -> 1), target(:b, a -> a + 1))"
+        manifest("1.0.0")
+        @test build_source(code, dir).built == [:a, :b]
+        @test isempty(build_source(code, dir).built)
+        manifest("1.1.0")
+        @test_logs (:warn, r"Foo 1\.0\.0 → 1\.1\.0") build_source(code, dir)
+        @test isempty(build_source(code, dir).built) # warned once
+        manifest("2.0.0")
+        s = @test_logs (:info, r"rebuilding everything") build_source(
+            code,
+            dir;
+            track_manifest = true,
+        )
+        @test s.built == [:a, :b]
+    end
+end
+
+@testitem "tar_outdated explains what a build would do" setup = [SourceFixtures] begin
+    mktempdir() do dir
+        code(clean) = """
+        p = tar_pipeline(
+            target(:raw, () -> 10),
+            target(:clean, raw -> $clean),
+            target(:model, clean -> clean * 2),
+        )
+        """
+        before = outdated_source(code("raw + 1"), dir)
+        @test before ==
+            [
+                (name = :raw, reason = :missing),
+                (name = :clean, reason = :upstream_outdated),
+                (name = :model, reason = :upstream_outdated),
+            ]
+        build_source(code("raw + 1"), dir)
+        @test isempty(outdated_source(code("raw + 1"), dir))
+        @test outdated_source(code("raw + 2"), dir) ==
+            [
+                (name = :clean, reason = :command_changed),
+                (name = :model, reason = :upstream_outdated),
+            ]
+        @test outdated_source(code("raw + 2"), dir; names = [:raw]) == []
+    end
+end
+
+# A tiny deterministic generator, so that failures are reproducible.
+@testmodule MiniRandom begin
+    export Gen, draw!
+    mutable struct Gen
+        state::UInt64
+    end
+    "A uniform integer in 1:n."
+    function draw!(g::Gen, n::Integer)
+        g.state = g.state * 6364136223846793005 + 1442695040888963407
+        return Int((g.state >> 33) % n) + 1
+    end
+end
+
+@testitem "oracle: incremental builds always equal a clean build" setup = [
+    SourceFixtures,
+    MiniRandom,
+] begin
+    # A target is a small integer function of its dependencies. Random edits change
+    # a coefficient, the shared modulus, or only the formatting or operand order,
+    # so some edits change outputs, some change code only, and some change nothing.
+    function render(spec)
+        lines = [
+            "const MODULUS = $(spec.modulus)",
+            "wrap(x) = mod(x, MODULUS)",
+            spec.noise,
+            "p = tar_pipeline(",
+        ]
+        for (i, t) in enumerate(spec.targets)
+            args = join(("t$d" for d in t.deps), ", ")
+            terms = ["$(t.a)", ("$(t.b) * t$d" for d in t.deps)...]
+            t.swap && (terms = reverse(terms))
+            push!(lines, "    target(:t$i, ($args) -> wrap($(join(terms, " + ")))),")
+        end
+        push!(lines, ")")
+        return join(lines, "\n") * "\n"
+    end
+    Target3 = NamedTuple{(:deps, :a, :b, :swap), Tuple{Vector{Int}, Int, Int, Bool}}
+    function random_spec(g)
+        n = 3 + draw!(g, 3)
+        ts = [
+            Target3((
+                sort(unique([draw!(g, i - 1) for _ in 1:(i == 1 ? 0 : draw!(g, 2))])),
+                draw!(g, 50),
+                draw!(g, 9),
+                false,
+            ))
+            for i in 1:n
+        ]
+        return (modulus = 1000 + draw!(g, 50), noise = "", targets = ts)
+    end
+    function edit(spec, g)
+        i = draw!(g, length(spec.targets))
+        t = spec.targets[i]
+        kind = draw!(g, 5)
+        targets = copy(spec.targets)
+        if kind == 1
+            targets[i] = merge(t, (a = draw!(g, 50),))
+        elseif kind == 2
+            targets[i] = merge(t, (b = draw!(g, 9),))
+        elseif kind == 3
+            targets[i] = merge(t, (swap = !t.swap,)) # same value, different code
+        end
+        modulus = kind == 4 ? 1000 + draw!(g, 50) : spec.modulus
+        noise = kind == 5 ? "# edit $(draw!(g, 1000))" : spec.noise # comment only
+        return (; modulus, noise, targets)
+    end
+
+    for seed in 1:4
+        g = Gen(UInt64(seed))
+        spec = random_spec(g)
+        names = [Symbol("t$i") for i in eachindex(spec.targets)]
+        incremental = mktempdir()
+        for step in 1:12
+            code = render(spec)
+            build_source(code, incremental)
+            @test isempty(outdated_source(code, incremental))
+            clean = mktempdir()
+            build_source(code, clean)
+            @test read_values(incremental, names...) == read_values(clean, names...)
+            spec = edit(spec, g)
+        end
     end
 end
