@@ -32,6 +32,7 @@ end
 struct BuildContext
     pipeline::Pipeline
     store::Store
+    root::String
     forced::Set{Symbol}
     io::IO
     discovery::Discovery
@@ -56,6 +57,7 @@ end
 function BuildContext(
     p::Pipeline,
     store::Store,
+    root::AbstractString,
     forced,
     io::IO,
     discovery::Discovery,
@@ -65,6 +67,7 @@ function BuildContext(
     return BuildContext(
         p,
         store,
+        String(root),
         Set{Symbol}(forced),
         io,
         discovery,
@@ -84,9 +87,15 @@ function log!(ctx::BuildContext, message::AbstractString)
     return nothing
 end
 
+"The stored value of a finished target: its object, or for a file target its path(s)."
+function load_value(ctx::BuildContext, name::Symbol)
+    get_target(ctx.pipeline, name).format == :file || return read_object(ctx.store, name)
+    return file_value(read_meta(ctx.store, name)::Record)
+end
+
 "Value of a finished target, loaded from the store on first use."
 get_value!(ctx::BuildContext, name::Symbol) = get!(
-    () -> read_object(ctx.store, name),
+    () -> load_value(ctx, name),
     ctx.values,
     name,
 )
@@ -105,7 +114,6 @@ code_for!(ctx::BuildContext, t::Target) = get!(
 function check_supported(p::Pipeline, names)
     for name in names
         t = get_target(p, name)
-        t.format == :file && error("target `$name`: file targets are not implemented yet")
         t.pattern === nothing ||
             error("target `$name`: dynamic branching is not implemented yet")
     end
@@ -189,6 +197,7 @@ function tar_make(
     ctx = BuildContext(
         p,
         s,
+        rootdir,
         Symbol[],
         io,
         Discovery(user_roots(rootdir, p.track)),
@@ -200,11 +209,14 @@ function tar_make(
         ctx.forced,
         force ? selected : manifest_forced(s, rootdir, selected, track_manifest),
     )
-    for name in selected
-        t = get_target(p, name)
-        process!(ctx, t; keep_going)
-        release!(ctx, t)
-        ctx.observe(ctx)
+    # Relative paths in file targets are relative to the project root.
+    cd(rootdir) do
+        for name in selected
+            t = get_target(p, name)
+            process!(ctx, t; keep_going)
+            release!(ctx, t)
+            ctx.observe(ctx)
+        end
     end
     sm = ctx.summary
     isempty(sm.errored) && record_manifest!(s, rootdir)
@@ -334,6 +346,7 @@ function process!(ctx::BuildContext, t::Target; keep_going::Bool)
         code,
         dep_hashes;
         forced = t.name in ctx.forced,
+        root = ctx.root,
     )
     if reason === nothing
         ctx.value_hashes[t.name] = stored_value_hash(ctx.store, t.name)
@@ -343,6 +356,24 @@ function process!(ctx::BuildContext, t::Target; keep_going::Bool)
         build!(ctx, t, cmd, code, dep_hashes, reason; keep_going)
     end
     return nothing
+end
+
+# Persist what a target returned. Returns the value its consumers receive, its
+# value hash, and any extra record fields (a file target keeps no object).
+function commit_value!(ctx::BuildContext, t::Target, value)
+    if t.format == :file
+        paths, scalar = normalize_file_value(t, value, ctx.root)
+        state = file_state(ctx.root, paths)
+        stored = (;
+            files = paths,
+            file_scalar = scalar,
+            file_signatures = state.signatures,
+            file_hashes = state.hashes,
+        )
+        return (scalar ? first(paths) : paths), state.value_hash, stored
+    end
+    path = write_object(ctx.store, t.name, value)
+    return value, object_hash(value, path), (;)
 end
 
 function build!(
@@ -360,8 +391,7 @@ function build!(
         args = Any[get_value!(ctx, d) for d in t.deps]
         value = Base.invokelatest(t.f, args...)
         seconds = (time_ns() - started) / 1.0e9
-        path = write_object(ctx.store, t.name, value)
-        vhash = object_hash(value, path)
+        consumer_value, vhash, stored = commit_value!(ctx, t, value)
         write_meta(
             ctx.store,
             t.name,
@@ -374,9 +404,10 @@ function build!(
                 format = string(t.format),
                 built_at = string(Dates.now(Dates.UTC)),
                 seconds,
+                stored...,
             ),
         )
-        ctx.remaining[t.name] > 0 && (ctx.values[t.name] = value)
+        ctx.remaining[t.name] > 0 && (ctx.values[t.name] = consumer_value)
         ctx.value_hashes[t.name] = vhash
         push!(ctx.summary.built, t.name)
         log!(ctx, "✔ $(t.name) $(round(seconds; digits = 2))s")

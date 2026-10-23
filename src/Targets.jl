@@ -38,6 +38,8 @@ include("codedeps.jl")
 
 include("manifest.jl")
 
+include("files.jl")
+
 include("outdated.jl")
 
 include("make.jl")

@@ -24,7 +24,7 @@ end
 
 "A `Store` for a store or a path to one (without creating anything)."
 as_store(store::Store) = store
-as_store(store::AbstractString) = Store(String(store))
+as_store(store::AbstractString) = Store(abspath(String(store)))
 
 default_store_path() = joinpath(project_root(), "_targets")
 
@@ -34,7 +34,8 @@ default_store_path() = joinpath(project_root(), "_targets")
 Create the store layout if needed, or validate an existing store's format version.
 """
 function open_store(root::AbstractString = default_store_path())
-    store = Store(String(root))
+    store = Store(abspath(String(root)))
+    root = store.root
     info_path = joinpath(root, "store.toml")
     if isfile(info_path)
         version = get(TOML.parsefile(info_path), "format_version", nothing)
@@ -139,6 +140,12 @@ Base.@kwdef struct Record
     seconds::Float64 = 0.0
     error::String = ""
     julia_version::String = string(VERSION)
+    # File targets keep no object: the paths they returned, whether it was a single
+    # path, and per-path stat signatures and content hashes (see files.jl).
+    files::Vector{String} = String[]
+    file_scalar::Bool = true
+    file_signatures::Vector{String} = String[]
+    file_hashes::Vector{String} = String[]
 end
 
 Base.:(==)(a::Record, b::Record) = all(

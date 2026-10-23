@@ -1,12 +1,15 @@
 """
     tar_read(name; store = default_store_path())
 
-The stored value of target `name`.
+The stored value of target `name`. For a file target this is its path (or vector
+of paths), relative to the project root.
 """
-tar_read(
-    name::Symbol;
-    store::Union{Store, AbstractString} = default_store_path(),
-) = read_object(as_store(store), name)
+function tar_read(name::Symbol; store::Union{Store, AbstractString} = default_store_path())
+    s = as_store(store)
+    record = read_meta(s, name)
+    (record !== nothing && record.format == "file") && return file_value(record)
+    return read_object(s, name)
+end
 
 """
     @tar_load names...

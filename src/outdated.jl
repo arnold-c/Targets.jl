@@ -1,5 +1,5 @@
 """
-    outdated_reason(store, t, cmd, code, dep_hashes; forced = false)
+    outdated_reason(store, t, cmd, code, dep_hashes; forced = false, root = nothing)
 
 Why target `t` must be rebuilt, or `nothing` if it is up to date. The first rule
 that applies wins, so the reason is meaningful in logs and in `tar_outdated()`.
@@ -8,7 +8,9 @@ that applies wins, so the reason is meaningful in logs and in `tar_outdated()`.
 
 Reasons, in order: `:forced`, `:always`, `:no_source`, `:missing`, `:errored`,
 `:julia_version_changed`, `:command_changed`, `:code_changed`, `:deps_changed`,
-`:upstream_changed`.
+`:upstream_changed`, `:file_changed`. File targets are re-checked on every call
+(`root` locates their files): a missing file makes them `:missing`, and changed
+contents `:file_changed`.
 """
 function outdated_reason(
     store::Store,
@@ -17,14 +19,19 @@ function outdated_reason(
     code::AbstractString,
     dep_hashes::AbstractDict{Symbol, String};
     forced::Bool = false,
+    root::Union{Nothing, AbstractString} = nothing,
 )
     forced && return :forced
     t.cue == :always && return :always
     cmd.hash === nothing && return :no_source
-    object_exists = has_object(store, t.name)
-    t.cue == :never && object_exists && return nothing
     record = read_meta(store, t.name)
-    (record === nothing || !object_exists) && return :missing
+    stored = if t.format == :file
+        record !== nothing && files_exist(file_root(root), record)
+    else
+        has_object(store, t.name)
+    end
+    t.cue == :never && stored && return nothing
+    (record === nothing || !stored) && return :missing
     isempty(record.error) || return :errored
     record.hash_source == "lowered" &&
         record.julia_version != string(VERSION) &&
@@ -35,10 +42,14 @@ function outdated_reason(
     for d in t.deps
         record.dep_hashes[string(d)] == dep_hashes[d] || return :upstream_changed
     end
+    if t.format == :file
+        file_state(file_root(root), record).value_hash == record.value_hash ||
+            return :file_changed
+    end
     return nothing
 end
 
-"Value hash of an up-to-date target: from its record, or from its object if it has none."
+"Value hash of an up-to-date target: from its record, or from its object if it has none. (For a file target the record's hash equals the files' current hash, or it would not be up to date.)"
 function stored_value_hash(store::Store, name::Symbol)
     record = read_meta(store, name)
     record === nothing || return record.value_hash
@@ -62,7 +73,8 @@ function tar_outdated(
     root::Union{Nothing, AbstractString} = nothing,
 )
     s = as_store(store)
-    discovery = Discovery(user_roots(something(root, project_root()), p.track))
+    rootdir = something(root, project_root())
+    discovery = Discovery(user_roots(rootdir, p.track))
     outdated = Dict{Symbol, Symbol}()
     result = NamedTuple{(:name, :reason), Tuple{Symbol, Symbol}}[]
     for name in selected_order(p, names)
@@ -71,7 +83,14 @@ function tar_outdated(
             :upstream_outdated
         else
             dep_hashes = Dict{Symbol, String}(d => stored_value_hash(s, d) for d in t.deps)
-            outdated_reason(s, t, command_hash(t), code_hash(discovery, t), dep_hashes)
+            outdated_reason(
+                s,
+                t,
+                command_hash(t),
+                code_hash(discovery, t),
+                dep_hashes;
+                root = rootdir,
+            )
         end
         reason === nothing && continue
         outdated[name] = reason

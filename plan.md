@@ -375,7 +375,8 @@ The same mechanism covers **input files** (a zero-argument function returning a 
 **Details to settle in implementation:**
 
 - **Directories.** Hash every file underneath in sorted path order, combining relative path and content, so renames count as changes.
-- **Paths.** Store paths relative to the project root, so a project can be moved or cloned. Warn on absolute paths outside the project. Normalize separators so stores are portable between platforms.
+- **Paths.** Store paths relative to the project root, so a project can be moved or cloned. Warn on absolute paths outside the project. Normalize separators so stores are portable between platforms. Because relative paths mean "relative to the project root", `tar_make` runs the build loop with the working directory set to the root (restored afterwards), so a target can write `output/fit.png` and consumers can read the path they receive. Store paths (`Store` roots) are made absolute up front so this change of directory cannot break them.
+- **Staleness.** A file target is `:missing` if any recorded file is gone, and `:file_changed` if the combined hash (paths plus contents) differs. Its consumers see that hash as their upstream hash, so they rebuild when it changes, and early cutoff then applies to *their* outputs. Edits that keep both size and modification time are invisible to the stat shortcut (as in the R package).
 - **Validation.** After a file target's function returns, check that every path exists and error if not.
 
 Done when: editing an input CSV rebuilds its consumers; touching it without changing bytes rebuilds nothing; deleting an output file rebuilds the target that wrote it.

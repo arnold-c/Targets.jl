@@ -267,7 +267,9 @@ end
     @test_throws "GraphMakie" tar_visnetwork("not a pipeline")
 end
 
-@testitem "tar_visnetwork plots through the GraphMakie extension" setup = [GraphFixtures] begin
+@testitem "tar_visnetwork plots through the GraphMakie extension" setup = [
+    GraphFixtures,
+] begin
     using GraphMakie, Makie
     fig = tar_visnetwork(diamond(); status = false)
     @test fig isa Makie.Figure
@@ -275,5 +277,5 @@ end
     @test !isempty(ax.scene.plots)
     @test tar_visnetwork(diamond(); names = [:left], status = false) isa Makie.Figure
     @test tar_visnetwork(diamond(); names = [:left], descendants = true, status = false) isa
-          Makie.Figure
+        Makie.Figure
 end
