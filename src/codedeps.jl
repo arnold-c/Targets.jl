@@ -483,14 +483,17 @@ end
     using Targets: Discovery, user_roots, code_hash, command_hash
     mktempdir() do dir
         path = joinpath(dir, "src.jl")
-        write(path, """
+        write(
+            path,
+            """
         const K = 3
         struct P
             a::Int
         end
         helper(x) = P(x * K)
         t = target(:a, () -> map(helper, [1, 2]))
-        """)
+        """,
+        )
         probe = """
         using Targets
         m = Module(:Fixture)
@@ -501,7 +504,10 @@ end
         print(Targets.command_hash(t).hash, " ", Targets.code_hash(d, t))
         """
         project = dirname(Base.active_project())
-        there = read(`$(Base.julia_cmd()) --startup-file=no --project=$project -e $probe`, String)
+        there = read(
+            `$(Base.julia_cmd()) --startup-file=no --project=$project -e $probe`,
+            String,
+        )
         m = Module(:Fixture)
         Core.eval(m, :(using Targets))
         Base.include(m, path)

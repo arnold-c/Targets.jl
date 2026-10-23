@@ -39,10 +39,29 @@ struct BuildContext
     codes::Dict{Symbol, String}
     values::Dict{Symbol, Any}
     value_hashes::Dict{Symbol, String}
+    remaining::Dict{Symbol, Int}
     summary::BuildSummary
+    observe::Function
 end
 
-function BuildContext(p::Pipeline, store::Store, forced, io::IO, discovery::Discovery)
+# How many selected targets still need each target's value in this run.
+function consumer_counts(p::Pipeline, selected)
+    counts = Dict{Symbol, Int}(name => 0 for name in selected)
+    for name in selected, d in get_target(p, name).deps
+        counts[d] += 1
+    end
+    return counts
+end
+
+function BuildContext(
+        p::Pipeline,
+        store::Store,
+        forced,
+        io::IO,
+        discovery::Discovery,
+        selected,
+        observe::Function,
+    )
     return BuildContext(
         p,
         store,
@@ -53,7 +72,9 @@ function BuildContext(p::Pipeline, store::Store, forced, io::IO, discovery::Disc
         Dict{Symbol, String}(),
         Dict{Symbol, Any}(),
         Dict{Symbol, String}(),
+        consumer_counts(p, selected),
         BuildSummary(),
+        observe,
     )
 end
 
@@ -145,6 +166,9 @@ names the packages that moved, or with `track_manifest = true` everything is
 rebuilt. With `check_stale`, the run errors if a tracked source file changed on
 disk after this session loaded it (unless Revise is loaded), since the hashes
 would then describe code the session is not running.
+
+Values are kept in memory only while a target in this run still needs them, so
+memory use follows the width of the pipeline, not its length.
 """
 function tar_make(
     p::Pipeline;
@@ -156,19 +180,31 @@ function tar_make(
     track_manifest::Bool = false,
     check_stale::Bool = true,
     io::IO = stdout,
+    observe::Function = ctx -> nothing,
 )
     rootdir = something(root, project_root())
     s = store isa Store ? store : open_store(store)
     selected = selected_order(p, names)
     check_supported(p, selected)
-    ctx = BuildContext(p, s, Symbol[], io, Discovery(user_roots(rootdir, p.track)))
+    ctx = BuildContext(
+        p,
+        s,
+        Symbol[],
+        io,
+        Discovery(user_roots(rootdir, p.track)),
+        selected,
+        observe,
+    )
     prepare!(ctx, selected; check_stale)
     union!(
         ctx.forced,
         force ? selected : manifest_forced(s, rootdir, selected, track_manifest),
     )
     for name in selected
-        process!(ctx, get_target(p, name); keep_going)
+        t = get_target(p, name)
+        process!(ctx, t; keep_going)
+        release!(ctx, t)
+        ctx.observe(ctx)
     end
     sm = ctx.summary
     isempty(sm.errored) && record_manifest!(s, rootdir)
@@ -201,10 +237,86 @@ end
 Load `script` into a fresh module and build the [`Pipeline`](@ref) its last
 expression returns.
 """
-tar_make(; script::AbstractString = default_script(), kwargs...) = tar_make(
-    load_pipeline(script);
-    kwargs...,
-)
+function tar_make(;
+        script::AbstractString = default_script(),
+        fresh::Bool = false,
+        kwargs...,
+    )
+    fresh && return tar_make_fresh(script; kwargs...)
+    return tar_make(load_pipeline(script); kwargs...)
+end
+
+# Drop a value from memory once its last consumer in this run has finished.
+function release!(ctx::BuildContext, t::Target)
+    for d in t.deps
+        ctx.remaining[d] -= 1
+        ctx.remaining[d] <= 0 && delete!(ctx.values, d)
+    end
+    return nothing
+end
+
+function write_summary(path::AbstractString, s::BuildSummary)
+    open(path, "w") do io
+        TOML.print(
+            io,
+            Dict(
+                string(f) => string.(getfield(s, f)) for f in fieldnames(BuildSummary)
+            ),
+        )
+    end
+end
+
+function read_summary(path::AbstractString)
+    d = TOML.parsefile(path)
+    return BuildSummary((Symbol.(d[string(f)]) for f in fieldnames(BuildSummary))...)
+end
+
+"""
+Build in a new Julia process, like the R package's `callr` default: no state from
+the current session (stale code, redefined functions) can leak in. Requires the
+pipeline to come from a script, since a `Pipeline` cannot cross processes.
+"""
+function tar_make_fresh(
+        script::AbstractString;
+        names = nothing,
+        force::Bool = false,
+        store::Union{Store, AbstractString} = default_store_path(),
+        root::Union{Nothing, AbstractString} = nothing,
+        keep_going::Bool = false,
+        track_manifest::Bool = false,
+        check_stale::Bool = true,
+        io::IO = stdout,
+    )
+    summary_path = tempname()
+    store_path = store isa Store ? store.root : String(store)
+    program = """
+    using Targets
+    summary = tar_make(;
+        script = $(repr(abspath(script))),
+        names = $(repr(names)),
+        force = $(repr(force)),
+        store = $(repr(store_path)),
+        root = $(repr(root === nothing ? nothing : String(root))),
+        keep_going = $(repr(keep_going)),
+        track_manifest = $(repr(track_manifest)),
+        check_stale = $(repr(check_stale)),
+    )
+    Targets.write_summary($(repr(summary_path)), summary)
+    """
+    project = Base.active_project()
+    cmd = `$(Base.julia_cmd()) --startup-file=no --project=$project -e $program`
+    try
+        run(pipeline(cmd; stdout = io, stderr = io))
+    catch e
+        e isa InterruptException && rethrow()
+        error("the fresh build failed; see the output above for the cause")
+    end
+    try
+        return read_summary(summary_path)
+    finally
+        rm(summary_path; force = true)
+    end
+end
 
 function process!(ctx::BuildContext, t::Target; keep_going::Bool)
     sm = ctx.summary
@@ -266,7 +378,7 @@ function build!(
                 seconds,
             ),
         )
-        ctx.values[t.name] = value
+        ctx.remaining[t.name] > 0 && (ctx.values[t.name] = value)
         ctx.value_hashes[t.name] = vhash
         push!(ctx.summary.built, t.name)
         log!(ctx, "✔ $(t.name) $(round(seconds; digits = 2))s")
@@ -665,5 +777,52 @@ end
             @test read_values(incremental, names...) == read_values(clean, names...)
             spec = edit(spec, g)
         end
+    end
+end
+
+@testitem "values are dropped from memory once their last consumer has run" setup = [SourceFixtures] begin
+    mktempdir() do dir
+        chain = """
+        p = tar_pipeline(
+            target(:a, () -> collect(1:100)),
+            target(:b, a -> sum(a)),
+            target(:c, b -> b + 1),
+            target(:d, c -> c + 1),
+        )
+        """
+        sizes = Int[]
+        build_source(chain, dir; observe = ctx -> push!(sizes, length(ctx.values)))
+        @test sizes == [1, 1, 1, 0]          # never more than one finished value held
+
+        diamond = """
+        p = tar_pipeline(
+            target(:raw, () -> 1),
+            target(:left, raw -> raw + 1),
+            target(:right, raw -> raw + 2),
+            target(:both, (left, right) -> left + right),
+        )
+        """
+        sizes = Int[]
+        build_source(diamond, dir; observe = ctx -> push!(sizes, length(ctx.values)))
+        @test sizes == [1, 2, 2, 0]          # raw is released after its last consumer
+
+        sizes = Int[]
+        @test isempty(build_source(diamond, dir; observe = ctx -> push!(sizes, length(ctx.values))).built)
+        @test all(==(0), sizes)              # an up-to-date run loads no object at all
+    end
+end
+
+@testitem "a fresh build runs in a new process and reports the same summary" begin
+    mktempdir() do dir
+        script = joinpath(dir, "_targets.jl")
+        write(script, "tar_pipeline(target(:x, () -> 41), target(:y, x -> x + 1))\n")
+        store = joinpath(dir, "_targets")
+        s = tar_make(; script, store, root = dir, fresh = true, io = devnull)
+        @test s.built == [:x, :y]
+        @test tar_read(:y; store) == 42
+        again = tar_make(; script, store, root = dir, fresh = true, io = devnull, names = [:y])
+        @test isempty(again.built) && again.skipped == [:x, :y]
+        write(script, "tar_pipeline(target(:x, () -> error(\"boom\")))\n")
+        @test_throws "fresh build failed" tar_make(; script, store, root = dir, fresh = true, force = true, io = devnull)
     end
 end
