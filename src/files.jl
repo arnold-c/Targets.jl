@@ -272,7 +272,10 @@ end
         write_files(dir, "a.txt" => "abc", "tables/t1.txt" => "1", "tables/t2.txt" => "2")
         build_source(code, dir)
         @test read_values(dir, :inputs, :count) == (["a.txt", "tables"], (2, 3))
-        write_files(dir, "tables/t3.txt" => "3") # a new file in the directory changes the hash
+        write_files(
+            dir,
+            "tables/t3.txt" => "3",
+        ) # a new file in the directory changes the hash
         @test build_source(code, dir).built == [:inputs, :count]
         @test isempty(build_source(code, dir).built)
         write_files(dir, "a.txt" => "abcd")

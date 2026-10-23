@@ -406,6 +406,14 @@ The pattern argument (`grid`) is passed one element at a time; every other argum
 - The parent's metadata lists the branch ids in pattern order, and its `value_hash` is the hash of the ordered list of branch value hashes.
 - At the end of a successful run, delete objects and records for branches no longer in the pattern.
 
+**Implementation notes (M4).**
+
+- Identity hashes of a pattern target's elements are stored in *its* record (`element_hashes`) when it is built, so an up-to-date run computes every branch id and staleness without loading the pattern value; it is loaded only when a branch has to be built. A pattern target built before it became one recomputes and keeps them. A *file* target can be a pattern (one branch per path, identity = path plus content hash), so editing one file rebuilds one branch.
+- Branching over a branching target keeps the upstream branch's *id*, and uses the upstream branch's value hash as the dependency hash, so a change rebuilds exactly one chain and ids stay stable.
+- Short ids extend (to 16 hex characters) only for elements whose 8-character ids collide.
+- Reordering changes the pattern target's value and the aggregate's hash, but rebuilds no branch.
+- Each branch is its own record, so one failing branch is retried on the next run while the others stay up to date; with `keep_going` the other branches are still built, and the target is reported as errored. `BuildSummary.branches` lists the branch ids built per target, and `tar_read(:fits)` returns all branch values in order. A target cannot be both a branching and a file target.
+
 **Static branching (`tar_map`) needs no special support.** Generate targets with a comprehension; `tar_pipeline` flattens the vector (Phase 2), closure captures distinguish the generated targets (4.1), and explicit `deps` combines them (`tar_combine`, Phase 1).
 
 Done when: adding one element to the pattern builds exactly one new branch; editing one element rebuilds one branch chain; aggregate targets update when any branch changes; changing one value in a static-branching loop rebuilds only that target.

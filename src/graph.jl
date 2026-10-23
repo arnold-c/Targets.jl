@@ -98,7 +98,21 @@ const STATUS_COLORS = Dict(
     :unbuilt => "#d9d9d9",
 )
 
-node_label(::Pipeline, t::Target) = string(t.name)
+"How many branches each branching target has in the store (absent if not built)."
+function branch_counts(p::Pipeline, nodes, store)
+    s = as_store(store)
+    counts = Dict{Symbol, Int}()
+    for n in nodes
+        get_target(p, n).pattern === nothing && continue
+        record = read_meta(s, n)
+        record === nothing || (counts[n] = length(record.branches))
+    end
+    return counts
+end
+
+node_label(t::Target, counts::AbstractDict) = haskey(counts, t.name) ?
+    "$(t.name) [$(counts[t.name])]" :
+    string(t.name)
 
 """
     tar_dot(p::Pipeline; names = nothing, descendants = false, status = true,
@@ -121,6 +135,7 @@ function tar_dot(
     nodes = graph_nodes(p, names, descendants)
     layout = graph_layout(p, nodes)
     statuses = status ? node_statuses(p, nodes; store, root) : nothing
+    counts = status ? branch_counts(p, nodes, store) : Dict{Symbol, Int}()
     io = IOBuffer()
     println(io, "digraph targets {")
     println(io, "  rankdir=LR;")
@@ -131,7 +146,7 @@ function tar_dot(
         shape = t.format == :file ? "box" : "ellipse"
         println(
             io,
-            "  \"$n\" [label=\"$(node_label(p, t))\", shape=$shape, fillcolor=\"$color\"];",
+            "  \"$n\" [label=\"$(node_label(t, counts))\", shape=$shape, fillcolor=\"$color\"];",
         )
     end
     shown = Set(nodes)

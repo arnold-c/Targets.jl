@@ -63,6 +63,9 @@ lambda_arg(_) = nothing
 "Argument names of an anonymous function expression; `nothing` entries are unnamed or destructured."
 function lambda_argnames(lhs)
     lhs isa Symbol && return Union{Symbol, Nothing}[lhs]
+    # `(xs...) -> ...` and `(x::T) -> ...` may parse without a surrounding tuple
+    (lhs isa Expr && lhs.head in (:..., :(::))) &&
+        return Union{Symbol, Nothing}[lambda_arg(lhs)]
     (lhs isa Expr && lhs.head == :tuple) || return nothing
     return Union{Symbol, Nothing}[
         lambda_arg(a)
@@ -72,6 +75,7 @@ function lambda_argnames(lhs)
 end
 
 function names_match(candidate, actual::Vector{Symbol})
+    candidate === nothing && return true # argument names not recoverable: do not exclude it
     length(candidate) == length(actual) || return false
     return all(
         i -> candidate[i] === nothing || candidate[i] === actual[i],

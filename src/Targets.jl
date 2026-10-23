@@ -45,6 +45,8 @@ include("outdated.jl")
 include("make.jl")
 export tar_make, tar_outdated, BuildSummary
 
+include("branching.jl")
+
 include("graph.jl")
 export tar_dot, tar_visnetwork
 

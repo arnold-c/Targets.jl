@@ -6,18 +6,26 @@ module TargetsGraphMakieExt
 using GraphMakie: graphplot!
 using Graphs: SimpleDiGraph, add_edge!
 using Makie: Axis, Figure, Point2f, hidedecorations!, hidespines!
-using Targets: Targets, Pipeline, STATUS_COLORS, get_target, graph_layout, graph_nodes,
-    node_label, node_statuses
+using Targets:
+    Targets,
+    Pipeline,
+    STATUS_COLORS,
+    get_target,
+    graph_layout,
+    graph_nodes,
+    branch_counts,
+    node_label,
+    node_statuses
 
 function Targets.tar_visnetwork(
-        p::Pipeline;
-        names = nothing,
-        descendants::Bool = false,
-        status::Bool = true,
-        store = Targets.default_store_path(),
-        root = nothing,
-        figure_size = (900, 500),
-    )
+    p::Pipeline;
+    names = nothing,
+    descendants::Bool = false,
+    status::Bool = true,
+    store = Targets.default_store_path(),
+    root = nothing,
+    figure_size = (900, 500),
+)
     nodes = graph_nodes(p, names, descendants)
     layout = graph_layout(p, nodes)
     index = Dict(n => i for (i, n) in enumerate(nodes))
@@ -27,7 +35,8 @@ function Targets.tar_visnetwork(
     end
     statuses = status ? node_statuses(p, nodes; store, root) : nothing
     colors = [statuses === nothing ? "#ffffff" : STATUS_COLORS[statuses[n]] for n in nodes]
-    labels = [node_label(p, get_target(p, n)) for n in nodes]
+    counts = status ? branch_counts(p, nodes, store) : Dict{Symbol, Int}()
+    labels = [node_label(get_target(p, n), counts) for n in nodes]
     positions = [Point2f(layout.positions[n]...) for n in nodes]
 
     fig = Figure(; size = figure_size)

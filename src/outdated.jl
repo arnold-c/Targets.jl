@@ -1,5 +1,6 @@
 """
-    outdated_reason(store, t, cmd, code, dep_hashes; forced = false, root = nothing)
+    outdated_reason(store, t, cmd, code, dep_hashes; forced = false, root = nothing,
+                    key = t.name)
 
 Why target `t` must be rebuilt, or `nothing` if it is up to date. The first rule
 that applies wins, so the reason is meaningful in logs and in `tar_outdated()`.
@@ -9,7 +10,9 @@ that applies wins, so the reason is meaningful in logs and in `tar_outdated()`.
 Reasons, in order: `:forced`, `:always`, `:no_source`, `:missing`, `:errored`,
 `:julia_version_changed`, `:command_changed`, `:code_changed`, `:deps_changed`,
 `:upstream_changed`, `:file_changed`. File targets are re-checked on every call
-(`root` locates their files): a missing file makes them `:missing`, and changed
+(`root` locates their files). `key` is where the record lives: `t.name`, or
+`"name/id"` for one branch of a branching target (a branching target as a whole
+is outdated if any recorded branch object is missing): a missing file makes them `:missing`, and changed
 contents `:file_changed`.
 """
 function outdated_reason(
@@ -20,15 +23,19 @@ function outdated_reason(
     dep_hashes::AbstractDict{Symbol, String};
     forced::Bool = false,
     root::Union{Nothing, AbstractString} = nothing,
+    key = t.name,
 )
     forced && return :forced
     t.cue == :always && return :always
     cmd.hash === nothing && return :no_source
-    record = read_meta(store, t.name)
+    record = read_meta(store, key)
     stored = if t.format == :file
         record !== nothing && files_exist(file_root(root), record)
+    elseif t.pattern !== nothing && key == t.name
+        # a branching target, not one branch
+        record !== nothing && all(id -> has_object(store, "$(t.name)/$id"), record.branches)
     else
-        has_object(store, t.name)
+        has_object(store, key)
     end
     t.cue == :never && stored && return nothing
     (record === nothing || !stored) && return :missing
@@ -50,10 +57,10 @@ function outdated_reason(
 end
 
 "Value hash of an up-to-date target: from its record, or from its object if it has none. (For a file target the record's hash equals the files' current hash, or it would not be up to date.)"
-function stored_value_hash(store::Store, name::Symbol)
-    record = read_meta(store, name)
+function stored_value_hash(store::Store, key)
+    record = read_meta(store, key)
     record === nothing || return record.value_hash
-    return hash_file(object_path(store, name))
+    return hash_file(object_path(store, key))
 end
 
 """

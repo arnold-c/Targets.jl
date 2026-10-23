@@ -3,15 +3,23 @@
 
 Names of targets that were `built`, found up to date (`skipped`), failed
 (`errored`) or not attempted because an upstream target failed (`blocked`),
-each in build order.
+each in build order. `branches` maps each branching target to the ids of the
+branches that were (re)built in this run.
 """
 struct BuildSummary
     built::Vector{Symbol}
     skipped::Vector{Symbol}
     errored::Vector{Symbol}
     blocked::Vector{Symbol}
+    branches::Dict{Symbol, Vector{String}}
 end
-BuildSummary() = BuildSummary(Symbol[], Symbol[], Symbol[], Symbol[])
+BuildSummary() = BuildSummary(
+    Symbol[],
+    Symbol[],
+    Symbol[],
+    Symbol[],
+    Dict{Symbol, Vector{String}}(),
+)
 
 function Base.show(io::IO, s::BuildSummary)
     print(
@@ -24,6 +32,7 @@ function Base.show(io::IO, s::BuildSummary)
         s.errored,
         ", blocked = ",
         s.blocked,
+        isempty(s.branches) ? "" : ", branches = " * string(s.branches),
         ")",
     )
 end
@@ -89,8 +98,10 @@ end
 
 "The stored value of a finished target: its object, or for a file target its path(s)."
 function load_value(ctx::BuildContext, name::Symbol)
-    get_target(ctx.pipeline, name).format == :file || return read_object(ctx.store, name)
-    return file_value(read_meta(ctx.store, name)::Record)
+    t = get_target(ctx.pipeline, name)
+    t.format == :file && return file_value(read_meta(ctx.store, name)::Record)
+    t.pattern === nothing || return load_branches(ctx.store, name)
+    return read_object(ctx.store, name)
 end
 
 "Value of a finished target, loaded from the store on first use."
@@ -114,8 +125,11 @@ code_for!(ctx::BuildContext, t::Target) = get!(
 function check_supported(p::Pipeline, names)
     for name in names
         t = get_target(p, name)
-        t.pattern === nothing ||
-            error("target `$name`: dynamic branching is not implemented yet")
+        (t.pattern !== nothing && t.format == :file) &&
+            error(
+                "target `$name`: a branching target cannot also be a file target; " *
+                    "branch over a file target and write files from a plain target instead",
+            )
     end
 end
 
@@ -267,18 +281,22 @@ function release!(ctx::BuildContext, t::Target)
     return nothing
 end
 
+const SUMMARY_LISTS = (:built, :skipped, :errored, :blocked)
+
 function write_summary(path::AbstractString, s::BuildSummary)
-    open(path, "w") do io
-        TOML.print(
-            io,
-            Dict(string(f) => string.(getfield(s, f)) for f in fieldnames(BuildSummary))
-        )
-    end
+    d = Dict{String, Any}(string(f) => string.(getfield(s, f)) for f in SUMMARY_LISTS)
+    d["branches"] = Dict(string(k) => v for (k, v) in s.branches)
+    open(io -> TOML.print(io, d), path, "w")
 end
 
 function read_summary(path::AbstractString)
     d = TOML.parsefile(path)
-    return BuildSummary((Symbol.(d[string(f)]) for f in fieldnames(BuildSummary))...)
+    lists = [Symbol.(d[string(f)]) for f in SUMMARY_LISTS]
+    branches = Dict{Symbol, Vector{String}}(
+        Symbol(k) => Vector{String}(v)
+        for (k, v) in d["branches"]
+    )
+    return BuildSummary(lists..., branches)
 end
 
 """
@@ -338,6 +356,7 @@ function process!(ctx::BuildContext, t::Target; keep_going::Bool)
     end
     cmd = command_for!(ctx, t)
     code = code_for!(ctx, t)
+    t.pattern === nothing || return process_branching!(ctx, t, cmd, code; keep_going)
     dep_hashes = Dict{Symbol, String}(d => ctx.value_hashes[d] for d in t.deps)
     reason = outdated_reason(
         ctx.store,
@@ -370,10 +389,25 @@ function commit_value!(ctx::BuildContext, t::Target, value)
             file_signatures = state.signatures,
             file_hashes = state.hashes,
         )
+        pattern_use = pattern_use_of(ctx.pipeline, t.name)
+        (pattern_use === nothing || !scalar) ||
+            error(
+                "target `$(t.name)` is the pattern of `$pattern_use`, so it must return a vector of paths",
+            )
         return (scalar ? first(paths) : paths), state.value_hash, stored
     end
     path = write_object(ctx.store, t.name, value)
-    return value, object_hash(value, path), (;)
+    stored = (;)
+    pattern_use = pattern_use_of(ctx.pipeline, t.name)
+    if pattern_use !== nothing && t.pattern === nothing
+        value isa AbstractVector ||
+            error(
+                "target `$(t.name)` is the pattern of `$pattern_use`, so it must return a vector, " *
+                    "not a `$(typeof(value))`",
+            )
+        stored = (; element_hashes = element_hashes(value), elements_recorded = true)
+    end
+    return value, object_hash(value, path), stored
 end
 
 function build!(
@@ -422,10 +456,10 @@ function build!(
 end
 
 # Record the failure but leave the last good object in place.
-function record_failure!(ctx::BuildContext, t::Target, cmd, e)
-    previous = something(read_meta(ctx.store, t.name), Record(; format = string(t.format)))
+function record_failure!(ctx::BuildContext, t::Target, cmd, e; key = t.name)
+    previous = something(read_meta(ctx.store, key), Record(; format = string(t.format)))
     message = first(sprint(showerror, e), 2000)
-    write_meta(ctx.store, t.name, update(previous; error = message))
+    write_meta(ctx.store, key, update(previous; error = message))
 end
 
 @testitem "a second run with no changes builds nothing" setup = [SourceFixtures] begin

@@ -146,6 +146,12 @@ Base.@kwdef struct Record
     file_scalar::Bool = true
     file_signatures::Vector{String} = String[]
     file_hashes::Vector{String} = String[]
+    # A branching target lists its branches (ids and value hashes, in pattern order);
+    # a target that is some target's pattern lists the identity hashes of its elements.
+    branches::Vector{String} = String[]
+    branch_hashes::Vector{String} = String[]
+    element_hashes::Vector{String} = String[]
+    elements_recorded::Bool = false
 end
 
 Base.:(==)(a::Record, b::Record) = all(
