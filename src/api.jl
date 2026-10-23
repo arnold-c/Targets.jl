@@ -3,8 +3,10 @@
 
 The stored value of target `name`.
 """
-tar_read(name::Symbol; store::Union{Store,AbstractString} = default_store_path()) =
-    read_object(as_store(store), name)
+tar_read(
+    name::Symbol;
+    store::Union{Store, AbstractString} = default_store_path(),
+) = read_object(as_store(store), name)
 
 """
     @tar_load names...
@@ -35,10 +37,12 @@ One row per target (`name`, `deps`, `format`, `pattern`, `cue`), without touchin
 the store. `tar_manifest()` loads `_targets.jl`.
 """
 tar_manifest(p::Pipeline) = [
-    (name = t.name, deps = t.deps, format = t.format, pattern = t.pattern, cue = t.cue) for
-    t in p.targets
+    (name = t.name, deps = t.deps, format = t.format, pattern = t.pattern, cue = t.cue)
+    for t in p.targets
 ]
-tar_manifest(; script::AbstractString = default_script()) = tar_manifest(load_pipeline(script))
+tar_manifest(; script::AbstractString = default_script()) = tar_manifest(load_pipeline(
+    script,
+))
 
 # Everything stored under a target's name: its object, its record, and any branches.
 function remove_target_files!(s::Store, name)
@@ -55,7 +59,10 @@ end
 Delete the metadata of the named targets so that they rebuild on the next run.
 Their stored objects stay, so `tar_read` keeps working in the meantime.
 """
-function tar_invalidate(names::Symbol...; store::Union{Store,AbstractString} = default_store_path())
+function tar_invalidate(
+    names::Symbol...;
+    store::Union{Store, AbstractString} = default_store_path(),
+)
     s = as_store(store)
     for name in names
         delete_meta(s, name)
@@ -69,7 +76,10 @@ end
 
 Delete the stored object and metadata of the named targets.
 """
-function tar_delete(names::Symbol...; store::Union{Store,AbstractString} = default_store_path())
+function tar_delete(
+    names::Symbol...;
+    store::Union{Store, AbstractString} = default_store_path(),
+)
     s = as_store(store)
     foreach(name -> remove_target_files!(s, name), names)
     return nothing
@@ -94,14 +104,16 @@ end
 Delete the objects and records of targets that are no longer in the pipeline
 (including targets that were renamed). Returns the names removed.
 """
-function tar_prune(p::Pipeline; store::Union{Store,AbstractString} = default_store_path())
+function tar_prune(p::Pipeline; store::Union{Store, AbstractString} = default_store_path())
     s = as_store(store)
     stale = filter(name -> !haskey(p.index, name), stored_names(s))
     foreach(name -> remove_target_files!(s, name), stale)
     return stale
 end
-tar_prune(; script::AbstractString = default_script(), kwargs...) =
-    tar_prune(load_pipeline(script); kwargs...)
+tar_prune(; script::AbstractString = default_script(), kwargs...) = tar_prune(
+    load_pipeline(script);
+    kwargs...,
+)
 
 """
     tar_destroy(; store = default_store_path(), ask = true, input = stdin, io = stdout)
@@ -110,7 +122,7 @@ Delete the whole store, after asking for confirmation unless `ask = false`.
 Returns whether it was deleted. Refuses to delete a directory that is not a store.
 """
 function tar_destroy(;
-    store::Union{Store,AbstractString} = default_store_path(),
+    store::Union{Store, AbstractString} = default_store_path(),
     ask::Bool = true,
     input::IO = stdin,
     io::IO = stdout,
@@ -118,7 +130,9 @@ function tar_destroy(;
     s = as_store(store)
     isdir(s.root) || return false
     isfile(joinpath(s.root, "store.toml")) ||
-        error("$(s.root) does not look like a Targets store (no store.toml); not deleting it")
+        error(
+            "$(s.root) does not look like a Targets store (no store.toml); not deleting it",
+        )
     if ask
         print(io, "Delete the store at $(s.root)? [y/N] ")
         flush(io)
@@ -146,8 +160,9 @@ end
     end
 end
 
-@testitem "@tar_load assigns in the caller's scope, including inside functions and modules" setup =
-    [StoreFixtures] begin
+@testitem "@tar_load assigns in the caller's scope, including inside functions and modules" setup = [
+    StoreFixtures,
+] begin
     mktempdir() do dir
         p, store = built_store(dir)
         @tar_load store = store x y
@@ -167,14 +182,22 @@ end
 
 @testitem "tar_manifest lists targets without touching the store" begin
     p = tar_pipeline(target(:a, () -> 1), target(:b, a -> a; cue = :always))
-    @test tar_manifest(p) == [
-        (name = :a, deps = Symbol[], format = :jld2, pattern = nothing, cue = :thorough),
-        (name = :b, deps = [:a], format = :jld2, pattern = nothing, cue = :always),
-    ]
+    @test tar_manifest(p) ==
+        [
+            (
+                name = :a,
+                deps = Symbol[],
+                format = :jld2,
+                pattern = nothing,
+                cue = :thorough,
+            ),
+            (name = :b, deps = [:a], format = :jld2, pattern = nothing, cue = :always),
+        ]
 end
 
-@testitem "tar_invalidate keeps the object but forces a rebuild; tar_delete removes both" setup =
-    [StoreFixtures] begin
+@testitem "tar_invalidate keeps the object but forces a rebuild; tar_delete removes both" setup = [
+    StoreFixtures,
+] begin
     using Targets: open_store, has_object, read_meta
     mktempdir() do dir
         p, store = built_store(dir)
@@ -183,7 +206,7 @@ end
         @test tar_read(:y; store) == 2
         @test read_meta(s, :y) === nothing
         built = tar_make(p; store, root = dir, io = devnull).built
-        @test built == [:y]                    # z is unchanged by early cutoff
+        @test built == [:y] # z is unchanged by early cutoff
         tar_delete(:y, :z; store)
         @test !has_object(s, :y) && !has_object(s, :z)
         @test read_meta(s, :z) === nothing
@@ -203,15 +226,16 @@ end
     end
 end
 
-@testitem "tar_destroy asks before deleting a store, and only deletes stores" setup =
-    [StoreFixtures] begin
+@testitem "tar_destroy asks before deleting a store, and only deletes stores" setup = [
+    StoreFixtures,
+] begin
     mktempdir() do dir
         p, store = built_store(dir)
         @test !tar_destroy(; store, input = IOBuffer("n\n"), io = devnull)
         @test isdir(store)
         @test tar_destroy(; store, input = IOBuffer("y\n"), io = devnull)
         @test !isdir(store)
-        @test !tar_destroy(; store, ask = false)       # nothing left to delete
+        @test !tar_destroy(; store, ask = false) # nothing left to delete
         plain = mkpath(joinpath(dir, "not_a_store"))
         @test_throws "does not look like" tar_destroy(; store = plain, ask = false)
     end

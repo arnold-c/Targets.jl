@@ -43,6 +43,9 @@ include("outdated.jl")
 include("make.jl")
 export tar_make, tar_outdated, BuildSummary
 
+include("graph.jl")
+export tar_dot, tar_visnetwork
+
 include("api.jl")
 export tar_read, @tar_load, tar_manifest, tar_invalidate, tar_delete, tar_prune, tar_destroy
 
