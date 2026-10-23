@@ -12,6 +12,7 @@ Targets to draw, in build order: all of them, or `names` with their ancestors
 (and, if asked, everything downstream of them).
 """
 function graph_nodes(p::Pipeline, names, with_descendants::Bool)
+    names = as_names(names)
     names === nothing && return copy(p.order)
     keep = Set(ancestors(p, names))
     with_descendants && union!(keep, _descendants(p, names))

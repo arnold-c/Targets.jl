@@ -226,13 +226,18 @@ function descendants(p::Pipeline, names)
     return filter(n -> seen[p.index[n]], p.order)
 end
 
+"A `names` argument as a vector: a single symbol is allowed, `nothing` means no selection."
+as_names(::Nothing) = nothing
+as_names(name::Symbol) = [name]
+as_names(names::AbstractVector{Symbol}) = Vector{Symbol}(names)
+
 """
     selected_order(p, names)
 
 Build order for `names` (plus ancestors), or the whole pipeline if `names` is `nothing`.
 """
 selected_order(p::Pipeline, ::Nothing) = copy(p.order)
-selected_order(p::Pipeline, names) = ancestors(p, names)
+selected_order(p::Pipeline, names) = ancestors(p, as_names(names))
 
 @testitem "pipeline orders targets by dependency, ties by declaration" begin
     using Targets
@@ -293,6 +298,22 @@ end
     @test ancestors(p, [:other, :clean]) == [:raw, :clean, :other]
     @test selected_order(p, nothing) == p.order
     @test_throws "did you mean `model`" ancestors(p, [:modle])
+end
+
+@testitem "every names keyword takes a vector of symbols, or a single symbol" begin
+    using Targets: selected_order, graph_nodes
+    p = tar_pipeline(target(:a, () -> 1), target(:b, a -> 1), target(:c, b -> 1))
+    @test selected_order(p, [:b]) == selected_order(p, :b) == [:a, :b]
+    @test graph_nodes(p, :b, true) == graph_nodes(p, [:b], true) == [:a, :b, :c]
+    mktempdir() do dir
+        store = joinpath(dir, "_targets")
+        @test tar_make(p; names = :b, store, root = dir, io = devnull).built == [:a, :b]
+        @test tar_outdated(p; names = :c, store, root = dir) ==
+            [(name = :c, reason = :missing)]
+        tar_invalidate(; names = :b, store)
+        tar_delete(; names = [:a], store)
+        @test tar_outdated(p; names = [:b], store, root = dir)[1].name == :a
+    end
 end
 
 @testitem "descendants returns the downstream closure in build order" begin

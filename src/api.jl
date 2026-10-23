@@ -60,17 +60,18 @@ function remove_target_files!(s::Store, name)
 end
 
 """
-    tar_invalidate(names...; store = default_store_path())
+    tar_invalidate(; names, store = default_store_path())
 
-Delete the metadata of the named targets so that they rebuild on the next run.
-Their stored objects stay, so `tar_read` keeps working in the meantime.
+Delete the metadata of the targets in `names` (a vector of symbols, or one symbol)
+so that they rebuild on the next run. Their stored objects stay, so `tar_read`
+keeps working in the meantime.
 """
-function tar_invalidate(
-    names::Symbol...;
+function tar_invalidate(;
+    names::Union{Symbol, AbstractVector{Symbol}},
     store::Union{Store, AbstractString} = default_store_path(),
 )
     s = as_store(store)
-    for name in names
+    for name in as_names(names)
         delete_meta(s, name)
         rm(joinpath(s.root, "meta", string(name)); recursive = true, force = true)
     end
@@ -78,16 +79,16 @@ function tar_invalidate(
 end
 
 """
-    tar_delete(names...; store = default_store_path())
+    tar_delete(; names, store = default_store_path())
 
-Delete the stored object and metadata of the named targets.
+Delete the stored object and metadata of the targets in `names`.
 """
-function tar_delete(
-    names::Symbol...;
+function tar_delete(;
+    names::Union{Symbol, AbstractVector{Symbol}},
     store::Union{Store, AbstractString} = default_store_path(),
 )
     s = as_store(store)
-    foreach(name -> remove_target_files!(s, name), names)
+    foreach(name -> remove_target_files!(s, name), as_names(names))
     return nothing
 end
 
@@ -208,12 +209,12 @@ end
     mktempdir() do dir
         p, store = built_store(dir)
         s = open_store(store)
-        tar_invalidate(:y; store)
+        tar_invalidate(; names = [:y], store)
         @test tar_read(:y; store) == 2
         @test read_meta(s, :y) === nothing
         built = tar_make(p; store, root = dir, io = devnull).built
         @test built == [:y] # z is unchanged by early cutoff
-        tar_delete(:y, :z; store)
+        tar_delete(; names = [:y, :z], store)
         @test !has_object(s, :y) && !has_object(s, :z)
         @test read_meta(s, :z) === nothing
         @test tar_make(p; store, root = dir, io = devnull).built == [:y, :z]
