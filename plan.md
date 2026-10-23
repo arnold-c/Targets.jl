@@ -494,6 +494,10 @@ Each milestone ends in something usable and a gate that must pass before the nex
 | **M4: Files and branching** | Phases 7 and 8 | File and branching scenario rows |
 | **M5: Sugar and release** | Phase 9; documentation; registry and name check | Macro and function pipelines produce identical graphs; docs build |
 
+### Status
+
+M0–M5 are implemented, each as its own revision with its tests green (`juliati`: 92 test items, including Aqua and JET). Deliberately left for later: the ready-queue/parallel scheduler (the loop is factored into `process!`/`build!`/`process_branching!` for it), a Documenter site (the README and docstrings are the documentation for now), and renaming the package (see the registry check below).
+
 ## Risks
 
 | Risk | Effect | Mitigation |
@@ -508,4 +512,6 @@ Each milestone ends in something usable and a gate that must pass before the nex
 | `Base.method_argnames` changes in a Julia release | Dependency inference breaks | One isolated helper, CI on LTS and latest (Phase 1) |
 | Recursive hashing or large globals slow on large codebases | Slow no-op runs | Per-run memoization; later, a per-file hash cache keyed by modification time |
 
-Before registering, search the General registry and JuliaHub for existing packages with similar names or aims, both to avoid a name clash and to borrow ideas.
+**Registry check (done during M5): the name `Targets` is taken.** A package called `Targets.jl` (codedthinking/Targets.jl, a small `@target`/`@get` memoisation package with a different design) is already registered, so this package must be renamed before it can be registered. The name appears in `Project.toml`, `src/Targets.jl`, the extension `TargetsGraphMakieExt`, the tests and the README; a rename is a mechanical find-and-replace plus a new UUID.
+
+The existing package's design is lighter: it re-evaluates a target when its dependencies or a redefined function change, and keeps values in the session. It is a useful contrast for the README, but there is nothing in it to borrow for the on-disk store, hashing or branching.

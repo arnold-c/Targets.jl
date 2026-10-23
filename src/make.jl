@@ -249,6 +249,9 @@ function load_pipeline(script::AbstractString)
     isfile(script) || error("no pipeline script at $script")
     m = Module(:TargetsScript)
     Core.eval(m, :(using Targets))
+    # a plain Module has no `include`/`eval`, which scripts reasonably expect
+    Core.eval(m, :(include(path::AbstractString) = Base.include($m, path)))
+    Core.eval(m, :(eval(ex) = Core.eval($m, ex)))
     p = Base.include(m, script)
     p isa Pipeline ||
         error(
@@ -615,6 +618,20 @@ end
         @test isempty(tar_make(; script, store, io = devnull).built)
         write(script, "1 + 1\n")
         @test_throws "must end with" tar_make(; script, store, io = devnull)
+    end
+end
+
+@testitem "a pipeline script can include helper files" begin
+    mktempdir() do dir
+        write(joinpath(dir, "helpers.jl"), "double(x) = 2x\n")
+        script = joinpath(dir, "_targets.jl")
+        write(
+            script,
+            "include(joinpath(@__DIR__, \"helpers.jl\"))\ntar_pipeline(target(:x, () -> double(21)))\n",
+        )
+        store = joinpath(dir, "_targets")
+        @test tar_make(; script, store, root = dir, io = devnull).built == [:x]
+        @test tar_read(:x; store) == 42
     end
 end
 

@@ -1,2 +1,4 @@
 Manifest*.toml
 .pi/
+examples/.demo/
+examples/.version_check/
