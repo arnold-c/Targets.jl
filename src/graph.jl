@@ -3,7 +3,7 @@
 ## The layout is computed here, by layers, so that the Graphviz export and the
 ## Makie plot (an extension) share it and no layout package is needed.
 
-const _descendants = descendants   # the `descendants` keyword below shadows the function
+const _descendants = descendants # the `descendants` keyword below shadows the function
 
 """
     graph_nodes(p, names, with_descendants)
@@ -26,7 +26,7 @@ end
 """
 struct GraphLayout
     layers::Vector{Vector{Symbol}}
-    positions::Dict{Symbol,Tuple{Float64,Float64}}
+    positions::Dict{Symbol, Tuple{Float64, Float64}}
 end
 
 """
@@ -43,8 +43,9 @@ function graph_layout(p::Pipeline, nodes::Vector{Symbol})
     for n in nodes, d in deps(n)
         push!(dependents[d], n)
     end
-    layer_of = Dict{Symbol,Int}()
-    for n in nodes   # build order: dependencies come first
+    layer_of = Dict{Symbol, Int}()
+    for n in nodes
+        # build order: dependencies come first
         layer_of[n] = isempty(deps(n)) ? 0 : 1 + maximum(layer_of[d] for d in deps(n))
     end
     depth = isempty(nodes) ? 0 : maximum(values(layer_of)) + 1
@@ -55,7 +56,10 @@ function graph_layout(p::Pipeline, nodes::Vector{Symbol})
     function reorder!(layer, neighbours)
         key(n) = begin
             ns = neighbours(n)
-            (isempty(ns) ? position[n] : sum(position[m] for m in ns) / length(ns), declared[n])
+            (
+                isempty(ns) ? position[n] : sum(position[m] for m in ns) / length(ns),
+                declared[n],
+            )
         end
         sort!(layer; by = key)
         for (i, n) in enumerate(layer)
@@ -66,7 +70,7 @@ function graph_layout(p::Pipeline, nodes::Vector{Symbol})
         foreach(i -> reorder!(layers[i], deps), 2:depth)
         foreach(i -> reorder!(layers[i], n -> dependents[n]), (depth - 1):-1:1)
     end
-    positions = Dict{Symbol,Tuple{Float64,Float64}}()
+    positions = Dict{Symbol, Tuple{Float64, Float64}}()
     for (i, layer) in enumerate(layers), (j, n) in enumerate(layer)
         positions[n] = (Float64(i - 1), (length(layer) + 1) / 2 - j)
     end
@@ -81,8 +85,8 @@ from the current code and store (nothing is stored).
 """
 function node_statuses(p::Pipeline, nodes; store, root)
     reasons = Dict(r.name => r.reason for r in tar_outdated(p; names = nodes, store, root))
-    status(reason) =
-        reason === nothing ? :uptodate :
+    status(reason) = reason === nothing ?
+        :uptodate :
         reason == :missing ? :unbuilt : reason == :errored ? :errored : :outdated
     return Dict(n => status(get(reasons, n, nothing)) for n in nodes)
 end
@@ -111,8 +115,8 @@ function tar_dot(
     names = nothing,
     descendants::Bool = false,
     status::Bool = true,
-    store::Union{Store,AbstractString} = default_store_path(),
-    root::Union{Nothing,AbstractString} = nothing,
+    store::Union{Store, AbstractString} = default_store_path(),
+    root::Union{Nothing, AbstractString} = nothing,
 )
     nodes = graph_nodes(p, names, descendants)
     layout = graph_layout(p, nodes)
@@ -125,7 +129,10 @@ function tar_dot(
         t = get_target(p, n)
         color = statuses === nothing ? "#ffffff" : STATUS_COLORS[statuses[n]]
         shape = t.format == :file ? "box" : "ellipse"
-        println(io, "  \"$n\" [label=\"$(node_label(p, t))\", shape=$shape, fillcolor=\"$color\"];")
+        println(
+            io,
+            "  \"$n\" [label=\"$(node_label(p, t))\", shape=$shape, fillcolor=\"$color\"];",
+        )
     end
     shown = Set(nodes)
     for n in nodes, d in get_target(p, n).deps
@@ -137,8 +144,10 @@ function tar_dot(
     println(io, "}")
     return String(take!(io))
 end
-tar_dot(; script::AbstractString = default_script(), kwargs...) =
-    tar_dot(load_pipeline(script); kwargs...)
+tar_dot(; script::AbstractString = default_script(), kwargs...) = tar_dot(
+    load_pipeline(script);
+    kwargs...,
+)
 
 """
     tar_visnetwork(p::Pipeline; names = nothing, descendants = false, ...)
@@ -150,11 +159,13 @@ Plot the pipeline with the same layout, colours and subgraph selection as
 function tar_visnetwork(args...; kwargs...)
     error(
         "tar_visnetwork needs GraphMakie and a Makie backend; load them first, " *
-        "e.g. `using GraphMakie, CairoMakie`",
+            "e.g. `using GraphMakie, CairoMakie`",
     )
 end
-tar_visnetwork(; script::AbstractString = default_script(), kwargs...) =
-    tar_visnetwork(load_pipeline(script); kwargs...)
+tar_visnetwork(; script::AbstractString = default_script(), kwargs...) = tar_visnetwork(
+    load_pipeline(script);
+    kwargs...,
+)
 
 @testmodule GraphFixtures begin
     using Targets
@@ -170,7 +181,9 @@ tar_visnetwork(; script::AbstractString = default_script(), kwargs...) =
     )
 end
 
-@testitem "graph_layout layers by longest path and orders within layers" setup = [GraphFixtures] begin
+@testitem "graph_layout layers by longest path and orders within layers" setup = [
+    GraphFixtures,
+] begin
     using Targets: graph_layout
     p = diamond()
     layout = graph_layout(p, copy(p.order))
@@ -189,7 +202,9 @@ end
     @test graph_layout(p, Symbol[]).layers == []
 end
 
-@testitem "graph_nodes selects ancestors, optionally with descendants" setup = [GraphFixtures] begin
+@testitem "graph_nodes selects ancestors, optionally with descendants" setup = [
+    GraphFixtures,
+] begin
     using Targets: graph_nodes
     p = diamond()
     @test graph_nodes(p, nothing, false) == p.order
@@ -209,11 +224,16 @@ end
     sub = tar_dot(p; names = [:left], status = false)
     @test occursin("\"raw\" -> \"left\";", sub)
     @test !occursin("right", sub) && !occursin("both", sub)
-    @test occursin("\"both\"", tar_dot(p; names = [:left], descendants = true, status = false))
+    @test occursin(
+        "\"both\"",
+        tar_dot(p; names = [:left], descendants = true, status = false),
+    )
     @test_throws "did you mean `left`" tar_dot(p; names = [:lft], status = false)
 end
 
-@testitem "tar_dot colours targets by status as code and the store change" setup = [SourceFixtures] begin
+@testitem "tar_dot colours targets by status as code and the store change" setup = [
+    SourceFixtures,
+] begin
     mktempdir() do dir
         code(clean) = """
         p = tar_pipeline(
@@ -237,11 +257,23 @@ end
         build_source(code("raw + 1"), dir)
         d1 = dot(code("raw + 1"))
         @test [colour(d1, n) for n in (:raw, :clean, :model)] == [green, green, green]
-        d2 = dot(code("raw + 2"))     # an edit: clean and its descendant are outdated
+        d2 = dot(code("raw + 2")) # an edit: clean and its descendant are outdated
         @test [colour(d2, n) for n in (:raw, :clean, :model)] == [green, orange, orange]
     end
 end
 
-@testitem "tar_visnetwork explains how to enable plotting" setup = [GraphFixtures] begin
-    @test_throws "GraphMakie" tar_visnetwork(diamond())
+@testitem "tar_visnetwork explains how to enable plotting" begin
+    # the fallback applies to anything the extension does not handle
+    @test_throws "GraphMakie" tar_visnetwork("not a pipeline")
+end
+
+@testitem "tar_visnetwork plots through the GraphMakie extension" setup = [GraphFixtures] begin
+    using GraphMakie, Makie
+    fig = tar_visnetwork(diamond(); status = false)
+    @test fig isa Makie.Figure
+    ax = only(filter(c -> c isa Makie.Axis, fig.content))
+    @test !isempty(ax.scene.plots)
+    @test tar_visnetwork(diamond(); names = [:left], status = false) isa Makie.Figure
+    @test tar_visnetwork(diamond(); names = [:left], descendants = true, status = false) isa
+          Makie.Figure
 end
