@@ -54,14 +54,14 @@ function consumer_counts(p::Pipeline, selected)
 end
 
 function BuildContext(
-        p::Pipeline,
-        store::Store,
-        forced,
-        io::IO,
-        discovery::Discovery,
-        selected,
-        observe::Function,
-    )
+    p::Pipeline,
+    store::Store,
+    forced,
+    io::IO,
+    discovery::Discovery,
+    selected,
+    observe::Function,
+)
     return BuildContext(
         p,
         store,
@@ -238,10 +238,10 @@ Load `script` into a fresh module and build the [`Pipeline`](@ref) its last
 expression returns.
 """
 function tar_make(;
-        script::AbstractString = default_script(),
-        fresh::Bool = false,
-        kwargs...,
-    )
+    script::AbstractString = default_script(),
+    fresh::Bool = false,
+    kwargs...,
+)
     fresh && return tar_make_fresh(script; kwargs...)
     return tar_make(load_pipeline(script); kwargs...)
 end
@@ -259,9 +259,7 @@ function write_summary(path::AbstractString, s::BuildSummary)
     open(path, "w") do io
         TOML.print(
             io,
-            Dict(
-                string(f) => string.(getfield(s, f)) for f in fieldnames(BuildSummary)
-            ),
+            Dict(string(f) => string.(getfield(s, f)) for f in fieldnames(BuildSummary))
         )
     end
 end
@@ -277,16 +275,16 @@ the current session (stale code, redefined functions) can leak in. Requires the
 pipeline to come from a script, since a `Pipeline` cannot cross processes.
 """
 function tar_make_fresh(
-        script::AbstractString;
-        names = nothing,
-        force::Bool = false,
-        store::Union{Store, AbstractString} = default_store_path(),
-        root::Union{Nothing, AbstractString} = nothing,
-        keep_going::Bool = false,
-        track_manifest::Bool = false,
-        check_stale::Bool = true,
-        io::IO = stdout,
-    )
+    script::AbstractString;
+    names = nothing,
+    force::Bool = false,
+    store::Union{Store, AbstractString} = default_store_path(),
+    root::Union{Nothing, AbstractString} = nothing,
+    keep_going::Bool = false,
+    track_manifest::Bool = false,
+    check_stale::Bool = true,
+    io::IO = stdout,
+)
     summary_path = tempname()
     store_path = store isa Store ? store.root : String(store)
     program = """
@@ -780,7 +778,9 @@ end
     end
 end
 
-@testitem "values are dropped from memory once their last consumer has run" setup = [SourceFixtures] begin
+@testitem "values are dropped from memory once their last consumer has run" setup = [
+    SourceFixtures,
+] begin
     mktempdir() do dir
         chain = """
         p = tar_pipeline(
@@ -792,7 +792,7 @@ end
         """
         sizes = Int[]
         build_source(chain, dir; observe = ctx -> push!(sizes, length(ctx.values)))
-        @test sizes == [1, 1, 1, 0]          # never more than one finished value held
+        @test sizes == [1, 1, 1, 0] # never more than one finished value held
 
         diamond = """
         p = tar_pipeline(
@@ -804,11 +804,17 @@ end
         """
         sizes = Int[]
         build_source(diamond, dir; observe = ctx -> push!(sizes, length(ctx.values)))
-        @test sizes == [1, 2, 2, 0]          # raw is released after its last consumer
+        @test sizes == [1, 2, 2, 0] # raw is released after its last consumer
 
         sizes = Int[]
-        @test isempty(build_source(diamond, dir; observe = ctx -> push!(sizes, length(ctx.values))).built)
-        @test all(==(0), sizes)              # an up-to-date run loads no object at all
+        @test isempty(
+            build_source(
+                diamond,
+                dir;
+                observe = ctx -> push!(sizes, length(ctx.values)),
+            ).built,
+        )
+        @test all(==(0), sizes) # an up-to-date run loads no object at all
     end
 end
 
@@ -820,9 +826,23 @@ end
         s = tar_make(; script, store, root = dir, fresh = true, io = devnull)
         @test s.built == [:x, :y]
         @test tar_read(:y; store) == 42
-        again = tar_make(; script, store, root = dir, fresh = true, io = devnull, names = [:y])
+        again = tar_make(;
+            script,
+            store,
+            root = dir,
+            fresh = true,
+            io = devnull,
+            names = [:y],
+        )
         @test isempty(again.built) && again.skipped == [:x, :y]
         write(script, "tar_pipeline(target(:x, () -> error(\"boom\")))\n")
-        @test_throws "fresh build failed" tar_make(; script, store, root = dir, fresh = true, force = true, io = devnull)
+        @test_throws "fresh build failed" tar_make(;
+            script,
+            store,
+            root = dir,
+            fresh = true,
+            force = true,
+            io = devnull,
+        )
     end
 end

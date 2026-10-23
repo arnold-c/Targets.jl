@@ -61,7 +61,7 @@ function tar_outdated(
     store::Union{Store, AbstractString} = default_store_path(),
     root::Union{Nothing, AbstractString} = nothing,
 )
-    s = store isa Store ? store : Store(String(store))
+    s = as_store(store)
     discovery = Discovery(user_roots(something(root, project_root()), p.track))
     outdated = Dict{Symbol, Symbol}()
     result = NamedTuple{(:name, :reason), Tuple{Symbol, Symbol}}[]

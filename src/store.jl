@@ -22,6 +22,10 @@ struct Store
     root::String
 end
 
+"A `Store` for a store or a path to one (without creating anything)."
+as_store(store::Store) = store
+as_store(store::AbstractString) = Store(String(store))
+
 default_store_path() = joinpath(project_root(), "_targets")
 
 """
@@ -195,7 +199,7 @@ end
 All metadata records as a vector of `NamedTuple`s (a Tables.jl-compatible table).
 """
 function tar_meta(; store::Union{Store, AbstractString} = default_store_path())
-    s = store isa Store ? store : Store(String(store))
+    s = as_store(store)
     return [meta_row(s, k) for k in meta_keys(s)]
 end
 

@@ -205,6 +205,28 @@ function ancestors(p::Pipeline, names)
 end
 
 """
+    descendants(p, names)
+
+The targets in `names` together with everything that transitively depends on
+them, in build order.
+"""
+function descendants(p::Pipeline, names)
+    check_names(p, names)
+    seen = falses(nv(p.graph))
+    queue = [p.index[n] for n in names]
+    foreach(v -> seen[v] = true, queue)
+    while !isempty(queue)
+        v = popfirst!(queue)
+        for w in outneighbors(p.graph, v)
+            seen[w] && continue
+            seen[w] = true
+            push!(queue, w)
+        end
+    end
+    return filter(n -> seen[p.index[n]], p.order)
+end
+
+"""
     selected_order(p, names)
 
 Build order for `names` (plus ancestors), or the whole pipeline if `names` is `nothing`.
@@ -271,4 +293,18 @@ end
     @test ancestors(p, [:other, :clean]) == [:raw, :clean, :other]
     @test selected_order(p, nothing) == p.order
     @test_throws "did you mean `model`" ancestors(p, [:modle])
+end
+
+@testitem "descendants returns the downstream closure in build order" begin
+    using Targets: descendants
+    p = tar_pipeline(
+        target(:raw, () -> 1),
+        target(:clean, raw -> 1),
+        target(:other, () -> 1),
+        target(:model, clean -> 1),
+        target(:report, (model, other) -> 1),
+    )
+    @test descendants(p, [:clean]) == [:clean, :model, :report]
+    @test descendants(p, [:other]) == [:other, :report]
+    @test descendants(p, [:report]) == [:report]
 end

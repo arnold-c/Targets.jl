@@ -44,6 +44,6 @@ include("make.jl")
 export tar_make, tar_outdated, BuildSummary
 
 include("api.jl")
-export tar_read
+export tar_read, @tar_load, tar_manifest, tar_invalidate, tar_delete, tar_prune, tar_destroy
 
 end
