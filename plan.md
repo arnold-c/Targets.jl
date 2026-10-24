@@ -553,6 +553,8 @@ Tasks are the right default on a laptop or a single node, and cheapest for many 
 
 **11.1 Structural: the ready queue, one job at a time.** Replace the `for name in selected` loop in `tar_make` with the scheduler described in Phase 5: count unfinished selected dependencies per target, keep a ready set ordered by declaration index, and on completion decrement dependents. With `jobs = 1` the order must equal `p.order` exactly; assert that in a test item and rerun the oracle test. No behavior change.
 
+*Status: implemented as `ReadyQueue` in `src/scheduler.jl`; `tar_make` drains it.*
+
 **11.2 Structural: split each build into plan, execute and commit.** Today `process!`/`build!`/`process_branching!` mix decisions, user calls and mutation of `BuildContext` (`values`, `value_hashes`, `remaining`, `summary`, `commands`, `codes`, the `Discovery` memo, `log!`). None of these may be touched from several tasks at once. Split them so that:
 
 - **Plan (scheduler task only):** blocked check, `command_for!`, `code_for!`, `outdated_reason`, and branch enumeration. Code discovery and hashing stay single-threaded and memoized, and need no locks.

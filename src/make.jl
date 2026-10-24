@@ -242,7 +242,7 @@ function tar_make(
     )
     # Relative paths in file targets are relative to the project root.
     cd(rootdir) do
-        for name in selected
+        drain!(ReadyQueue(p, selected)) do name
             t = get_target(p, name)
             process!(ctx, t; keep_going)
             release!(ctx, t)
