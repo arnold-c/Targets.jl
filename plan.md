@@ -416,6 +416,8 @@ The pattern argument (`grid`) is passed one element at a time; every other argum
 
 **Static branching (`tar_map`) needs no special support.** Generate targets with a comprehension; `tar_pipeline` flattens the vector (Phase 2), closure captures distinguish the generated targets (4.1), and explicit `deps` combines them (`tar_combine`, Phase 1).
 
+**Decision: a small `tar_map` helper on top.** Comprehensions make the user build names and write `deps` between targets of one branch by hand, which is awkward when values have no natural name. `tar_map(template, values; names)` calls `template(value)`, suffixes each returned target's name, and renames `deps` and `pattern` that refer to targets of the same call (others are untouched). Default suffixes: keys of a `NamedTuple`/`AbstractDict`; else the value if it is a `Symbol`, string, integer or tuple of those (joined by `_`); else the position. `names` overrides with a collection or a function of the value; duplicate or invalid suffixes are errors that suggest `names`. It returns a `NamedTuple` of template name => generated targets, which `tar_pipeline` flattens. `tar_combine(name, f, targets...)` is `target` with `deps` taken from the given targets. No macro rewriting: closures carry the value, as with comprehensions.
+
 Done when: adding one element to the pattern builds exactly one new branch; editing one element rebuilds one branch chain; aggregate targets update when any branch changes; changing one value in a static-branching loop rebuilds only that target.
 
 ## Phase 9: Macro sugar

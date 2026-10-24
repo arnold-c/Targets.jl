@@ -55,13 +55,31 @@ tar_pipeline(
 )
 ```
 
-For generated names, give the dependencies explicitly:
+For static branching (R's `tar_map`), `tar_map` calls a template once per value and
+suffixes the names of the targets it returns. Dependencies between targets of the same
+template get the same suffix, so they can still be written as argument names:
 
 ```julia
-models = (:ols, :lasso, :ridge)
-fits = [target(Symbol(:fit_, i), data -> fit(m, data)) for (i, m) in enumerate(models)]
-combined = target(:all_fits, (xs...) -> reduce(vcat, xs); deps = [Symbol(:fit_, i) for i in 1:3])
-tar_pipeline(fits, combined)   # nested collections are flattened
+m = tar_map((ols = OLS(), lasso = Lasso(0.1))) do model
+    (
+        target(:fit, clean_data -> fit(model, clean_data)),   # fit_ols, fit_lasso
+        target(:summary, fit -> summarize(fit)),              # summary_ols, summary_lasso
+    )
+end
+tar_pipeline(clean_data_target, m, tar_combine(:all_fits, (xs...) -> reduce(vcat, xs), m.summary))
+```
+
+Suffixes are the keys of a `NamedTuple` or `Dict`; otherwise the values themselves when
+they are symbols, strings, integers or tuples of those (`Iterators.product` crossings give
+`fit_ols_1`); otherwise positions. Override with `names = [...]` or `names = v -> ...`.
+The result maps template names to their targets (`m.fit`), and `tar_pipeline` flattens it.
+
+`tar_map` is a convenience: a comprehension works too, with explicit `deps` for
+generated names:
+
+```julia
+fits = [target(Symbol(:fit_, m), data -> fit(m, data)) for m in (:ols, :lasso)]
+tar_pipeline(fits, tar_combine(:all_fits, (xs...) -> reduce(vcat, xs), fits))
 ```
 
 ## What triggers a rebuild

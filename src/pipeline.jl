@@ -27,7 +27,7 @@ end
     tar_pipeline(targets...; track = [])
 
 Build a [`Pipeline`](@ref). Arguments may be targets or (nested) collections of
-targets, so comprehensions can be passed directly.
+targets, so comprehensions and [`tar_map`](@ref) results can be passed directly.
 """
 tar_pipeline(ts...; track = []) = Pipeline(flatten_targets(ts), collect(Any, track))
 
@@ -37,6 +37,7 @@ flatten_targets(ts::Union{AbstractVector, Tuple}) = reduce(
     (flatten_targets(t) for t in ts);
     init = Target[],
 )
+flatten_targets(ts::NamedTuple) = flatten_targets(Tuple(ts))
 flatten_targets(x) = throw(ArgumentError(
     "tar_pipeline() accepts targets or collections of targets, got `$(typeof(x))`",
 ))

@@ -46,7 +46,7 @@ uses_makie(dir) = isfile(demo_script(dir)) &&
 
 """
     write_demo(dir; scale = 3, note = "", data = "1.0 2.0 NaN 4.0", grid = "[0.1, 0.5, 1.0]",
-               discount = "x", shifts = "(1, 2)", makie = uses_makie(dir))
+               discount = "x", shifts = "(low = 1, high = 2)", makie = uses_makie(dir))
 
 Write the demo project into `dir`. Each keyword changes one thing:
 
@@ -55,8 +55,9 @@ Write the demo project into `dir`. Each keyword changes one thing:
 - `data`: contents of the input file `data/raw.csv`
 - `grid`: the pattern target's elements (branching)
 - `discount`: an expression inside a helper two calls deep from the `scores` target
-- `shifts`: the values that generate one `shifted_<k>` target each (static branching),
-  combined by `shifted_total`
+- `shifts`: a named tuple of shifts; each name gets a `shifted_<name>` and a
+  `shift_summary_<name>` target (static branching with `tar_map`), combined by
+  `shifted_total` (`tar_combine`)
 - `makie`: add `using CairoMakie` to `_targets.jl` (for `tar_visnetwork`); kept on regeneration
 """
 function write_demo(
@@ -66,7 +67,7 @@ function write_demo(
     data = "1.0 2.0 NaN 4.0",
     grid = "[0.1, 0.5, 1.0]",
     discount = "x",
-    shifts = "(1, 2)",
+    shifts = "(low = 1, high = 2)",
     makie = uses_makie(dir),
 )
     mkpath(joinpath(dir, "data"))
@@ -105,9 +106,20 @@ function write_demo(
             @target report   = summarize(scores)
         end
 
-        # Static branching: plain Julia generates one target per value; one target combines them.
-        static = [target(Symbol(:shifted_, k), cleaned -> sum(cleaned) + k) for k in $shifts]
-        combined = target(:shifted_total, (xs...) -> sum(xs); deps = [t.name for t in static])
+        # Static branching: two targets per named shift (`shifted_low`, `shift_summary_low`, ...).
+        # `shift_summary` depends on `shifted` from its own branch; one target combines them.
+        static = tar_map($shifts) do k
+            (
+                target(:shifted, cleaned -> cleaned .+ k),
+                target(:shift_summary, shifted -> summarize(shifted)),
+            )
+        end
+
+        combined = tar_combine(
+        	:shifted_total,
+        	(xs...) -> sum(x.total for x in xs),
+        	static.shift_summary
+        )
 
         tar_pipeline(base.targets, static, combined)
         """,
@@ -140,11 +152,7 @@ function demo_setup(dir::AbstractString = demo_dir())
         end
     end
     println("Demo project ready in ", dir)
-    println(
-        "  cd(\"",
-        relpath(dir),
-        "\"); then start julia with --project=. and run:",
-    )
+    println("  cd(\"", relpath(dir), "\"); then start julia with --project=. and run:")
     println("  using Targets, CairoMakie")
     println("  tar_make()")
     println("  tar_visnetwork()")
@@ -193,7 +201,8 @@ expected targets were rebuilt. Returns `true` if every step matched.
 """
 function walkthrough(dir = mktempdir())
     everything = [:raw_file, :raw, :cleaned, :grid, :scores, :report]
-    append!(everything, [:shifted_1, :shifted_2, :shifted_total])
+    shifted(names...) = [Symbol(p, n) for n in names for p in (:shifted_, :shift_summary_)]
+    append!(everything, shifted(:low, :high), [:shifted_total])
     results = Bool[]
     run(label, expected; kw...) = push!(
         results,
@@ -222,21 +231,38 @@ function walkthrough(dir = mktempdir())
         discount = "x + 0",
         scale = 4,
         grid = "[0.1, 0.5, 1.0, 2.0]",
-        shifts = "(1, 3)",
+        shifts = "(low = 1, high = 3)",
     )
-    run("static branch value changed", [:shifted_3, :shifted_total])
+    run("static branch value changed", [shifted(:high)..., :shifted_total])
 
     write_demo(
         dir;
         discount = "x + 0",
         scale = 4,
         grid = "[0.1, 0.5, 1.0, 2.0]",
-        shifts = "(1, 3)",
+        shifts = "(low = 1, mid = 2, high = 3)",
+    )
+    run("static branch added", [shifted(:mid)..., :shifted_total])
+
+    write_demo(
+        dir;
+        discount = "x + 0",
+        scale = 4,
+        grid = "[0.1, 0.5, 1.0, 2.0]",
+        shifts = "(low = 1, mid = 2, high = 3)",
         data = "1.0 2.0 NaN 4.0 8.0",
     )
     run(
         "input file edited",
-        [:raw_file, :raw, :cleaned, :scores, :report, :shifted_1, :shifted_3, :shifted_total],
+        [
+            :raw_file,
+            :raw,
+            :cleaned,
+            :scores,
+            :report,
+            shifted(:low, :mid, :high)...,
+            :shifted_total,
+        ],
     )
 
     touch(joinpath(dir, "data", "raw.csv"))

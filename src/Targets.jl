@@ -25,6 +25,9 @@ export Target, target
 include("pipeline.jl")
 export Pipeline, tar_pipeline
 
+include("static.jl")
+export tar_map, tar_combine
+
 include("canonical.jl")
 
 include("source.jl")
