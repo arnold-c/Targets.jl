@@ -19,6 +19,11 @@ struct Target
     group::Union{Nothing, Symbol}
 end
 
+"A copy of target `t` with some fields replaced."
+with_fields(t::Target; changes...) = Target(
+    (get(changes, f, getfield(t, f)) for f in fieldnames(Target))...,
+)
+
 """
     target(name, f; deps = nothing, format = :jld2, pattern = nothing, cue = :thorough)
 

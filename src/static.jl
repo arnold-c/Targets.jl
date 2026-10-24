@@ -91,15 +91,12 @@ function suffix_branch(ts::Vector{Target}, suffix::AbstractString)
     rename(n) = n in local_names ? branch_name(n, suffix) : n
     rename(::Nothing) = nothing
     return [
-        t.name => Target(
-            rename(t.name),
-            t.f,
-            rename.(t.deps),
-            t.format,
-            rename(t.pattern),
-            t.cue,
-            t.source,
-            t.name,
+        t.name => with_fields(
+            t;
+            name = rename(t.name),
+            deps = rename.(t.deps),
+            pattern = rename(t.pattern),
+            group = t.name,
         )
         for t in ts
     ]
