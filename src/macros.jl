@@ -90,7 +90,28 @@ function referenced_targets(ex, names, found = Symbol[])
 end
 
 # A bare symbol names a target (`pattern = grid`); a quoted one already is a Symbol.
-option_value(::Val{:pattern}, v::Symbol) = QuoteNode(v)
+option_value(::Val{:pattern}, v) = pattern_expr(v)
+
+# R-style pattern calls, `map(a, b)`, `cross(a, head(b, 2))`, ..., become combinators.
+const PATTERN_CALLS = Dict(
+    :map => :Map,
+    :cross => :Cross,
+    :head => :Head,
+    :slice => :Slice,
+    :sample => :Sample,
+)
+pattern_expr(v::Symbol) = QuoteNode(v)
+pattern_expr(v) = v
+function pattern_expr(v::Expr)
+    (Meta.isexpr(v, :call) && haskey(PATTERN_CALLS, v.args[1])) || return v
+    f = v.args[1]
+    args = v.args[2:end]
+    # map and cross combine patterns; the others take one pattern and plain arguments
+    parts = f in (:map, :cross) ?
+        map(pattern_expr, args) :
+        [pattern_expr(args[1]); args[2:end]]
+    return Expr(:call, GlobalRef(@__MODULE__, PATTERN_CALLS[f]), parts...)
+end
 option_value(_, v) = v
 
 function expand_target(d::TargetDecl, names)

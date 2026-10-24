@@ -47,12 +47,6 @@ end
 
 failed(r::JobResult) = r.exception !== nothing
 
-"One element of a branching target's pattern: its branch id and identity hash."
-struct PatternElement
-    id::String
-    hash::String
-end
-
 """
     BranchProgress
 
@@ -64,7 +58,7 @@ mutable struct BranchProgress
     const target::Target
     const cmd::CommandHash
     const code::String
-    const elements::Vector{PatternElement}
+    const elements::Vector{Branch}
     const hashes::Vector{String}
     const built::Vector{Int}
     const previous::Union{Nothing, Record}

@@ -95,7 +95,7 @@ function suffix_branch(ts::Vector{Target}, suffix::AbstractString)
             t;
             name = rename(t.name),
             deps = rename.(t.deps),
-            pattern = rename(t.pattern),
+            pattern = map_names(rename, t.pattern),
             group = t.name,
         )
         for t in ts

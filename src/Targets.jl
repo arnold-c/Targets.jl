@@ -26,6 +26,9 @@ include("testing.jl")
 include("formats.jl")
 export StorageFormat, ArrowFormat, ParquetFormat, CSVFormat
 
+include("patterns.jl")
+export Pattern, Map, Cross, Head, Slice, Sample
+
 include("target.jl")
 export Target, target
 

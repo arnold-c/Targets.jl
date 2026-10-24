@@ -7,9 +7,9 @@
 
 const BRANCH_ID_LENGTH = 8
 
-"Name of some target that uses `name` as its pattern, or `nothing`."
+"Name of some target that uses `name` in its pattern, or `nothing`."
 function pattern_use_of(p::Pipeline, name::Symbol)
-    i = findfirst(t -> t.pattern === name, p.targets)
+    i = findfirst(t -> name in pattern_names(t.pattern), p.targets)
     return i === nothing ? nothing : p.targets[i].name
 end
 
@@ -51,26 +51,20 @@ function branch_ids(hashes::Vector{String})
     ]
 end
 
-function pattern_target(ctx::BuildContext, t::Target)
-    t.pattern === nothing && error("target `$(t.name)` has no pattern")
-    return get_target(ctx.pipeline, t.pattern)
-end
-
 # Identity hashes of a file target's paths: the path together with its content hash.
 file_element_hashes(record::Record) = disambiguate(
     String[canonical_hash((f, h)) for (f, h) in zip(record.files, record.file_hashes)]
 )
 
 """
-    pattern_elements(ctx, t)
+    pattern_elements(ctx, up, t)
 
-The elements a branching target `t` maps over, as (branch id, identity hash) in
-pattern order, read from the pattern target's record without loading its value.
-Over another branching target the mapping is 1:1: each branch keeps the upstream
-branch's id, and its hash is the upstream branch's value hash.
+The elements of pattern target `up` that branching target `t` maps over, as
+(branch id, identity hash) in order, read from `up`'s record without loading
+its value. If `up` is itself branching, its elements are its branches: each
+keeps the upstream branch's id, and its hash is that branch's value hash.
 """
-function pattern_elements(ctx::BuildContext, t::Target)
-    up = pattern_target(ctx, t)
+function pattern_elements(ctx::BuildContext, up::Target, t::Target)
     record = read_meta(ctx.store, up.name)::Record
     if up.pattern !== nothing
         return [
@@ -99,11 +93,39 @@ function pattern_elements(ctx::BuildContext, t::Target)
     return [PatternElement(id, h) for (id, h) in zip(branch_ids(hashes), hashes)]
 end
 
-"The value of element `i` of the pattern, loaded only when a branch has to be built."
-function pattern_element_value(ctx::BuildContext, t::Target, i::Integer, el::PatternElement)
-    up = pattern_target(ctx, t)
-    up.pattern === nothing || return read_object(ctx.store, "$(up.name)/$(el.id)")
-    return get_value!(ctx, up.name)[i]
+"""
+    pattern_branches(ctx, t)
+
+The branches of branching target `t`, in pattern order. A branch over a single
+pattern target keeps that element's id and hash; a branch combining several
+elements is identified by the hash of their hashes, in pattern order.
+"""
+function pattern_branches(ctx::BuildContext, t::Target)
+    elements_of(name) = pattern_elements(ctx, get_target(ctx.pipeline, name), t)
+    combos = select_combinations(t.pattern, elements_of, resolve_seed(ctx.pipeline, t))
+    if all(c -> length(c) == 1, combos)
+        return [Branch(only(c).element.id, only(c).element.hash, c) for c in combos]
+    end
+    hashes = disambiguate([
+        canonical_hash(Tuple(p.element.hash for p in c))
+        for c in combos
+    ])
+    return [Branch(id, h, c) for (id, h, c) in zip(branch_ids(hashes), hashes, combos)]
+end
+
+"The value of one pick of a branch, loaded only when the branch has to be built."
+function pick_value(ctx::BuildContext, pick::Pick)
+    up = get_target(ctx.pipeline, pick.name)
+    up.pattern === nothing || return read_object(ctx.store, "$(up.name)/$(pick.element.id)")
+    return get_value!(ctx, up.name)[pick.index]
+end
+
+# What a branch receives for dependency `d`: its element(s) if `d` is in the pattern.
+function branch_arg(ctx::BuildContext, b::Branch, d::Symbol)
+    picks = filter(p -> p.name == d, b.picks)
+    isempty(picks) && return get_value!(ctx, d)
+    length(picks) == 1 && return pick_value(ctx, only(picks))
+    return Tuple(pick_value(ctx, p) for p in picks)
 end
 
 "All branch values of a branching target, in pattern order."
@@ -125,11 +147,13 @@ end
 
 combined_hash(hashes::Vector{String}) = bytes2hex(SHA.sha256(join(hashes, "\n")::String))
 
-function branch_dep_hashes(ctx::BuildContext, t::Target, el::PatternElement)
-    return Dict{Symbol, String}(
-        d => (d == t.pattern ? el.hash : ctx.value_hashes[d])
-        for d in t.deps
-    )
+function branch_dep_hashes(ctx::BuildContext, t::Target, b::Branch)
+    function dep_hash(d)
+        hashes = [p.element.hash for p in b.picks if p.name == d]
+        isempty(hashes) && return ctx.value_hashes[d]
+        return length(hashes) == 1 ? only(hashes) : canonical_hash(Tuple(hashes))
+    end
+    return Dict{Symbol, String}(d => dep_hash(d) for d in t.deps)
 end
 
 """
@@ -141,7 +165,7 @@ contribute their stored value hashes; the target is finished (see
 there is none.
 """
 function plan_branching!(ctx::BuildContext, t::Target, cmd, code)
-    elements = pattern_elements(ctx, t)
+    elements = pattern_branches(ctx, t)
     progress = BranchProgress(
         t,
         cmd,
@@ -175,8 +199,7 @@ function plan_branching!(ctx::BuildContext, t::Target, cmd, code)
             continue
         end
         args, load_error = resolve_args() do
-            element = pattern_element_value(ctx, t, i, el)
-            Any[d == t.pattern ? element : get_value!(ctx, d) for d in t.deps]
+            Any[branch_arg(ctx, el, d) for d in t.deps]
         end
         push!(
             jobs,

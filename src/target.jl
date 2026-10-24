@@ -13,7 +13,7 @@ struct Target
     f::Any
     deps::Vector{Symbol}
     format::Union{Symbol, StorageFormat}
-    pattern::Union{Nothing, Symbol}
+    pattern::Union{Nothing, Symbol, Pattern}
     cue::Symbol
     source::Union{Nothing, Expr}
     group::Union{Nothing, Symbol}
@@ -59,7 +59,7 @@ function target(
     f;
     deps::Union{Nothing, AbstractVector{Symbol}} = nothing,
     format::Union{Symbol, StorageFormat} = :jld2,
-    pattern::Union{Nothing, Symbol} = nothing,
+    pattern::Union{Nothing, Symbol, Pattern} = nothing,
     cue::Symbol = :thorough,
     source::Union{Nothing, Expr} = nothing,
     seed::Union{Nothing, Symbol, Integer} = :auto,

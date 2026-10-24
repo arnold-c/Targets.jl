@@ -99,9 +99,10 @@ end
 function check_patterns(targets)
     for t in targets
         t.pattern === nothing && continue
-        t.pattern in t.deps ||
+        missing_names = setdiff(pattern_names(t.pattern), t.deps)
+        isempty(missing_names) ||
             throw(PipelineError(
-                "target `$(t.name)` has pattern `$(t.pattern)`, which must also be one of its dependencies ($(join(t.deps, ", ")))",
+                "target `$(t.name)` has pattern `$(t.pattern)`, which must only name its dependencies ($(join(t.deps, ", ")))",
             ))
     end
 end
@@ -310,7 +311,7 @@ end
         target(:b, a -> 1),
         target(:c, b -> 1),
     )
-    @test_throws "must also be one of its dependencies" tar_pipeline(
+    @test_throws "must only name its dependencies" tar_pipeline(
         target(:g, () -> 1),
         target(:f, () -> 1; pattern = :g),
     )
