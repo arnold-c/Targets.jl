@@ -4,7 +4,8 @@
 Names of targets that were `built`, found up to date (`skipped`), failed
 (`errored`) or not attempted because an upstream target failed (`blocked`),
 each in build order. `branches` maps each branching target to the ids of the
-branches that were (re)built in this run.
+branches that were (re)built in this run, and `trimmed` each `error = :trim`
+target to the ids of the failed branches left out of its value.
 """
 struct BuildSummary
     built::Vector{Symbol}
@@ -12,12 +13,14 @@ struct BuildSummary
     errored::Vector{Symbol}
     blocked::Vector{Symbol}
     branches::Dict{Symbol, Vector{String}}
+    trimmed::Dict{Symbol, Vector{String}}
 end
 BuildSummary() = BuildSummary(
     Symbol[],
     Symbol[],
     Symbol[],
     Symbol[],
+    Dict{Symbol, Vector{String}}(),
     Dict{Symbol, Vector{String}}(),
 )
 
@@ -33,6 +36,7 @@ function Base.show(io::IO, s::BuildSummary)
         ", blocked = ",
         s.blocked,
         isempty(s.branches) ? "" : ", branches = " * string(s.branches),
+        isempty(s.trimmed) ? "" : ", trimmed = " * string(s.trimmed),
         ")",
     )
 end
@@ -51,6 +55,7 @@ struct BuildContext
     value_hashes::Dict{Symbol, String}
     remaining::Dict{Symbol, Int}
     branching::Dict{Symbol, BranchProgress}
+    nulled::Set{Symbol} # failed `error = :null` targets: consumers get `nothing`
     summary::BuildSummary
     observe::Function
 end
@@ -87,6 +92,7 @@ function BuildContext(
         Dict{Symbol, String}(),
         consumer_counts(p, selected),
         Dict{Symbol, BranchProgress}(),
+        Set{Symbol}(),
         BuildSummary(),
         observe,
     )
@@ -332,17 +338,18 @@ const SUMMARY_LISTS = (:built, :skipped, :errored, :blocked)
 function write_summary(path::AbstractString, s::BuildSummary)
     d = Dict{String, Any}(string(f) => string.(getfield(s, f)) for f in SUMMARY_LISTS)
     d["branches"] = Dict(string(k) => v for (k, v) in s.branches)
+    d["trimmed"] = Dict(string(k) => v for (k, v) in s.trimmed)
     open(io -> TOML.print(io, d), path, "w")
 end
 
 function read_summary(path::AbstractString)
     d = TOML.parsefile(path)
     lists = [Symbol.(d[string(f)]) for f in SUMMARY_LISTS]
-    branches = Dict{Symbol, Vector{String}}(
+    ids(key) = Dict{Symbol, Vector{String}}(
         Symbol(k) => Vector{String}(v)
-        for (k, v) in d["branches"]
+        for (k, v) in get(d, key, Dict())
     )
-    return BuildSummary(lists..., branches)
+    return BuildSummary(lists..., ids("branches"), ids("trimmed"))
 end
 
 """
@@ -406,7 +413,10 @@ need several jobs, or none.
 """
 function plan!(ctx::BuildContext, t::Target)
     sm = ctx.summary
-    upstream_failed = filter(d -> d in sm.errored || d in sm.blocked, t.deps)
+    upstream_failed = filter(
+        d -> (d in sm.errored && !(d in ctx.nulled)) || d in sm.blocked,
+        t.deps,
+    )
     if !isempty(upstream_failed)
         push!(sm.blocked, t.name)
         log!(ctx, "⊘ $(t.name) skipped: upstream $(join(upstream_failed, ", ")) failed")
@@ -476,7 +486,8 @@ function commit!(ctx::BuildContext, r::JobResult; keep_going::Bool)
         record_failure!(ctx, t, r.exception)
         push!(ctx.summary.errored, t.name)
         log!(ctx, "✖ $(t.name): $(first(sprint(showerror, r.exception), 200))")
-        keep_going || throw(r.exception)
+        t.error === :null && null_value!(ctx, t)
+        stops_build(t, keep_going) && throw(r.exception)
         return true
     end
     write_meta(ctx.store, t.name, job_record(r))
@@ -485,6 +496,19 @@ function commit!(ctx::BuildContext, r::JobResult; keep_going::Bool)
     push!(ctx.summary.built, t.name)
     log!(ctx, "✔ $(t.name) $(round(r.seconds; digits = 2))s")
     return true
+end
+
+"Whether a failure of `t` stops the build (see the `error` option of [`target`](@ref))."
+stops_build(t::Target, keep_going::Bool) = !keep_going && t.error === :stop
+
+const NULL_VALUE_HASH = canonical_hash((:null_value,))
+
+"Give the consumers of failed target `t` `nothing` instead of blocking them."
+function null_value!(ctx::BuildContext, t::Target)
+    push!(ctx.nulled, t.name)
+    get(ctx.remaining, t.name, 0) > 0 && (ctx.values[t.name] = nothing)
+    ctx.value_hashes[t.name] = NULL_VALUE_HASH
+    return nothing
 end
 
 log_start!(ctx::BuildContext, job::Job) = log!(ctx, "▶ $(job.key) ($(job.reason))")

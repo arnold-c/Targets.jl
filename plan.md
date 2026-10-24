@@ -693,6 +693,8 @@ read_value(::JLD2Format, path) = JLD2.load(path, "value")
 - `:null`: consumers receive `nothing` and still run. The target stays `:errored`, so it is retried next run, and the summary reports it.
 - `:trim` (branching targets): failed branches are left out of the aggregate value, and the parent is committed with the surviving branches; their ids are listed in the summary and the record (`trimmed`). The parent stays outdated until no branch fails.
 
+*Status (15.1): implemented (`error` option on `target`; `stops_build`/`null_value!` in make.jl; trimming in `finish_branching!`). A `:null` target's consumers see a fixed placeholder value hash, so they rebuild once it succeeds. A trimmed target's record lists `trimmed` ids and carries an error message, which keeps it `:errored` (and thus retried) until no branch fails; `BuildSummary.trimmed` lists the ids, and the target itself counts as built.*
+
 **15.2 Retries.** `retries = 0` and `retry_delay = 0` per target, for flaky I/O and cluster nodes. Each attempt is logged, only the last error is recorded, `InterruptException` is never retried, and each attempt uses the same seed (so retrying a deterministic failure is pointless; document this).
 
 **15.3 Workspaces.** When a target or branch fails, save what is needed to reproduce the call to `_targets/workspaces/<key>.jld2`: the argument values that were in memory or are not otherwise stored (the branch element, and upstream values from targets whose objects may be rebuilt later; copies by default, `workspace = :refs` records store keys and value hashes only), plus the seed, error and backtrace. Delete the workspace when the target next builds successfully.

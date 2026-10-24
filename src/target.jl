@@ -1,5 +1,6 @@
 const CUES = (:thorough, :always, :never)
 const DEPLOYMENTS = (:spawn, :main)
+const ERROR_MODES = (:stop, :continue, :null, :trim)
 
 """
     Target
@@ -20,6 +21,7 @@ struct Target
     seed::Union{Nothing, Symbol, Int}
     slots::Union{Symbol, Int}
     deployment::Symbol
+    error::Symbol
 end
 
 "A copy of target `t` with some fields replaced."
@@ -53,6 +55,12 @@ started next to the target, not how many threads the target itself uses
 (see [`tar_slots`](@ref)). `deployment = :main` runs the target in the task that
 called `tar_make`, never at the same time as another `:main` target, for code
 that is not safe to run concurrently.
+
+`error` says what a failure of this target does: `:stop` (the default) stops
+the build unless `tar_make(; keep_going = true)`; `:continue` never stops it,
+but blocks the target's descendants; `:null` gives consumers `nothing` so they
+still run; `:trim` (branching targets) leaves failed branches out of the
+target's value. In every mode the failed target is retried on the next build.
 """
 function target(
     name::Symbol,
@@ -65,6 +73,7 @@ function target(
     seed::Union{Nothing, Symbol, Integer} = :auto,
     slots::Union{Symbol, Integer} = 1,
     deployment::Symbol = :spawn,
+    error::Symbol = :stop,
 )
     validate_name(name)
     format in (:file, :url) || resolve_format(format)
@@ -84,6 +93,12 @@ function target(
         throw(ArgumentError(
             "target `$name`: slots must be a positive integer or `:all`, got `$slots`",
         ))
+    error in ERROR_MODES ||
+        throw(ArgumentError(
+            "target `$name`: error must be one of $ERROR_MODES, got `$error`",
+        ))
+    (error === :trim && pattern === nothing) &&
+        throw(ArgumentError("target `$name`: error = :trim needs a branching target"))
     deployment in DEPLOYMENTS ||
         throw(ArgumentError(
             "target `$name`: deployment must be one of $DEPLOYMENTS, got `$deployment`",
@@ -100,6 +115,7 @@ function target(
         seed_value,
         slots isa Integer ? Int(slots) : slots,
         deployment,
+        error,
     )
 end
 

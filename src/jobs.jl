@@ -61,6 +61,7 @@ mutable struct BranchProgress
     const elements::Vector{Branch}
     const hashes::Vector{String}
     const built::Vector{Int}
+    const failed::Vector{Int}
     const previous::Union{Nothing, Record}
     pending::Int
     failure::Any

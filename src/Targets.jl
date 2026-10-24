@@ -69,6 +69,8 @@ export tar_make, tar_outdated, BuildSummary
 
 include("branching.jl")
 
+include("errors.jl")
+
 include("replicate.jl")
 export tar_rep, tar_map_rep
 

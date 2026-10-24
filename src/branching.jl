@@ -196,6 +196,7 @@ function plan_branching!(ctx::BuildContext, t::Target, cmd, code)
         elements,
         fill("", length(elements)),
         Int[],
+        Int[],
         read_meta(ctx.store, t.name),
         0,
         nothing,
@@ -266,7 +267,8 @@ function commit_branch!(ctx::BuildContext, r::JobResult; keep_going::Bool)
     progress.pending -= 1
     if failed(r)
         progress.failure === nothing && (progress.failure = r.exception)
-        if !keep_going
+        push!(progress.failed, job.branch)
+        if stops_build(t, keep_going)
             push!(ctx.summary.errored, t.name)
             delete!(ctx.branching, t.name)
             throw(r.exception)
@@ -287,12 +289,19 @@ function finish_branching!(ctx::BuildContext, progress::BranchProgress)
     ids = [el.id for el in progress.elements]
     built = [ids[i] for i in sort(progress.built)]
     isempty(built) || (ctx.summary.branches[t.name] = built)
-    if progress.failure !== nothing
+    if progress.failure !== nothing && t.error !== :trim
         push!(ctx.summary.errored, t.name)
         record_failure!(ctx, t, progress.failure)
+        t.error === :null && null_value!(ctx, t)
         return nothing
     end
-    hashes = progress.hashes
+    # with error = :trim, failed branches are left out (and retried next time)
+    kept = setdiff(eachindex(ids), progress.failed)
+    trimmed = ids[sort(progress.failed)]
+    isempty(trimmed) || (ctx.summary.trimmed[t.name] = trimmed)
+    all_ids = ids
+    ids = ids[kept]
+    hashes = progress.hashes[kept]
     value_hash = combined_hash(hashes)
     deps = Dict{String, String}(string(d) => ctx.value_hashes[d] for d in t.deps)
     write_meta(
@@ -309,9 +318,14 @@ function finish_branching!(ctx::BuildContext, progress::BranchProgress)
             seed = seed_string(resolve_seed(ctx.pipeline, t)),
             branches = ids,
             branch_hashes = hashes,
+            trimmed,
+            # a trimmed target stays outdated until every branch succeeds
+            error = isempty(trimmed) ?
+                "" :
+                "branches failed and were trimmed: $(join(trimmed, ", "))",
         ),
     )
-    prune_branches!(ctx.store, t.name, ids)
+    prune_branches!(ctx.store, t.name, all_ids)
     ctx.value_hashes[t.name] = value_hash
     previous = progress.previous
     changed = !isempty(built) ||

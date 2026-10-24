@@ -228,6 +228,8 @@ Base.@kwdef struct Record
     branch_hashes::Vector{String} = String[]
     element_hashes::Vector{String} = String[]
     elements_recorded::Bool = false
+    # Ids of failed branches left out of an `error = :trim` target's value.
+    trimmed::Vector{String} = String[]
 end
 
 Base.:(==)(a::Record, b::Record) = all(
