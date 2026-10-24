@@ -734,6 +734,8 @@ With parallel and distributed builds, `progress.log` alone is not enough to see 
 - **Graph.** `tar_dot`/`tar_visnetwork` gain a `running` status colour, taken from the latest run's events.
 - **Tests.** The events of a run with one failure and `keep_going`; `tar_progress` during a run (from the `observe` hook already passed to `tar_make`).
 
+*Status: implemented in `src/progress.jl`. Besides the per-key statuses, a run writes `run_started` and `run_finished` events with an empty key; `run_finished` is also written when the run fails, so `tar_poll` knows when to stop. Branch keys (`name/id`) get their own events. The `worker` column is `local` until Phase 12.*
+
 ### Lower priority, not yet planned
 
 - Cloud or shared stores (S3, GCS): would need an object-storage backend behind `object_path`/`atomic_write`, which Phase 13's interface makes easier.

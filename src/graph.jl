@@ -82,14 +82,19 @@ end
     node_statuses(p, nodes; store, root)
 
 `:uptodate`, `:outdated`, `:errored` or `:unbuilt` for each target, computed
-from the current code and store (nothing is stored).
+from the current code and store (nothing is stored), or `:running` while a
+build in progress (by its events) is running it.
 """
 function node_statuses(p::Pipeline, nodes; store, root)
     reasons = Dict(r.name => r.reason for r in tar_outdated(p; names = nodes, store, root))
+    running = running_targets(as_store(store))
     status(reason) = reason === nothing ?
         :uptodate :
         reason == :missing ? :unbuilt : reason == :errored ? :errored : :outdated
-    return Dict(n => status(get(reasons, n, nothing)) for n in nodes)
+    return Dict(
+        n => n in running ? :running : status(get(reasons, n, nothing))
+        for n in nodes
+    )
 end
 
 const STATUS_COLORS = Dict(
@@ -97,6 +102,7 @@ const STATUS_COLORS = Dict(
     :outdated => "#fdb863",
     :errored => "#e66101",
     :unbuilt => "#d9d9d9",
+    :running => "#80b1d3",
 )
 
 "How many branches each branching target has in the store (absent if not built)."

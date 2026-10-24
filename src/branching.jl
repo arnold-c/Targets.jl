@@ -256,9 +256,11 @@ function commit_branch!(ctx::BuildContext, r::JobResult; keep_going::Bool)
     t = job.target
     if failed(r)
         record_failure!(ctx, t, r.exception; key = job.key, backtrace = r.backtrace)
+        event!(ctx, job.key, :errored; r.seconds)
         log!(ctx, "✖ $(job.key): $(first(sprint(showerror, r.exception), 200))")
     else
         write_meta(ctx.store, job.key, job_record(r))
+        event!(ctx, job.key, :built; r.seconds)
         log!(ctx, "✔ $(job.key) $(round(r.seconds; digits = 2))s")
     end
     # a sibling branch already failed the target and the build is stopping
@@ -291,6 +293,7 @@ function finish_branching!(ctx::BuildContext, progress::BranchProgress)
     isempty(built) || (ctx.summary.branches[t.name] = built)
     if progress.failure !== nothing && t.error !== :trim
         push!(ctx.summary.errored, t.name)
+        event!(ctx, t.name, :errored)
         record_failure!(ctx, t, progress.failure)
         t.error === :null && null_value!(ctx, t)
         return nothing
@@ -335,9 +338,11 @@ function finish_branching!(ctx::BuildContext, progress::BranchProgress)
         !isempty(previous.error)
     if changed
         push!(ctx.summary.built, t.name)
+        event!(ctx, t.name, :built)
         log!(ctx, "✔ $(t.name): $(length(built)) of $(length(ids)) branches built")
     else
         push!(ctx.summary.skipped, t.name)
+        event!(ctx, t.name, :skipped)
         log!(ctx, "· $(t.name): $(length(ids)) branches up to date")
     end
     return nothing

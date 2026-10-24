@@ -82,6 +82,9 @@ export tar_rep, tar_map_rep
 include("dispatch.jl")
 export tar_slots
 
+include("progress.jl")
+export tar_progress, tar_poll
+
 include("graph.jl")
 export tar_dot, tar_visnetwork
 

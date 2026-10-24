@@ -57,6 +57,7 @@ struct BuildContext
     branching::Dict{Symbol, BranchProgress}
     nulled::Set{Symbol} # failed `error = :null` targets: consumers get `nothing`
     warned::Set{String} # keys of jobs that logged warnings
+    run_id::String      # identifies this run's progress events
     summary::BuildSummary
     observe::Function
 end
@@ -95,6 +96,7 @@ function BuildContext(
         Dict{Symbol, BranchProgress}(),
         Set{Symbol}(),
         Set{String}(),
+        new_run_id(),
         BuildSummary(),
         observe,
     )
@@ -280,8 +282,13 @@ function tar_make(
         Dict{Symbol, Float64}() :
         critical_path(p, selected, last_seconds(s, selected))
     queue = ReadyQueue(p, selected; priority)
-    with(CHECK_MUTATION => check_mutation) do
-        cd(() -> run_jobs!(ctx, queue; jobs = slots, keep_going), rootdir)
+    event!(ctx, "", :run_started)
+    try
+        with(CHECK_MUTATION => check_mutation) do
+            cd(() -> run_jobs!(ctx, queue; jobs = slots, keep_going), rootdir)
+        end
+    finally
+        event!(ctx, "", :run_finished)
     end
     sm = sort_summary!(ctx.summary, p)
     isempty(sm.errored) && record_manifest!(s, rootdir)
@@ -422,6 +429,7 @@ function plan!(ctx::BuildContext, t::Target)
     )
     if !isempty(upstream_failed)
         push!(sm.blocked, t.name)
+        event!(ctx, t.name, :blocked)
         log!(ctx, "⊘ $(t.name) skipped: upstream $(join(upstream_failed, ", ")) failed")
         return Job[]
     end
@@ -443,6 +451,7 @@ function plan!(ctx::BuildContext, t::Target)
     if reason === nothing
         ctx.value_hashes[t.name] = stored_value_hash(ctx.store, t.name)
         push!(sm.skipped, t.name)
+        event!(ctx, t.name, :skipped)
         log!(ctx, "· $(t.name) up to date")
         return Job[]
     end
@@ -493,6 +502,7 @@ function commit!(ctx::BuildContext, r::JobResult; keep_going::Bool)
     if failed(r)
         record_failure!(ctx, t, r.exception; backtrace = r.backtrace)
         push!(ctx.summary.errored, t.name)
+        event!(ctx, t.name, :errored; r.seconds)
         log!(ctx, "✖ $(t.name): $(first(sprint(showerror, r.exception), 200))")
         t.error === :null && null_value!(ctx, t)
         stops_build(t, keep_going) && throw(r.exception)
@@ -502,6 +512,7 @@ function commit!(ctx::BuildContext, r::JobResult; keep_going::Bool)
     ctx.remaining[t.name] > 0 && (ctx.values[t.name] = r.value)
     ctx.value_hashes[t.name] = r.value_hash
     push!(ctx.summary.built, t.name)
+    event!(ctx, t.name, :built; r.seconds)
     log!(ctx, "✔ $(t.name) $(round(r.seconds; digits = 2))s")
     return true
 end
@@ -519,7 +530,10 @@ function null_value!(ctx::BuildContext, t::Target)
     return nothing
 end
 
-log_start!(ctx::BuildContext, job::Job) = log!(ctx, "▶ $(job.key) ($(job.reason))")
+function log_start!(ctx::BuildContext, job::Job)
+    event!(ctx, job.key, :started)
+    log!(ctx, "▶ $(job.key) ($(job.reason))")
+end
 
 # Record the failure but leave the last good object in place.
 function record_failure!(ctx::BuildContext, t::Target, e; key = t.name, backtrace = nothing)

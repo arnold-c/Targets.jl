@@ -92,6 +92,7 @@ function plan_ready!(ctx::BuildContext, queue::ReadyQueue, pending::Vector{Job})
         if isempty(jobs) && !haskey(ctx.branching, name)
             finish_target!(ctx, queue, name)
         else
+            foreach(job -> event!(ctx, job.key, :queued), jobs)
             append!(pending, jobs)
         end
     end
