@@ -174,6 +174,16 @@ function prepare!(ctx::BuildContext, selected; check_stale::Bool)
     warn_weak_hashes(ctx, selected)
 end
 
+"The last recorded build time of each target, used to prioritise the critical path."
+function last_seconds(s::Store, names)
+    seconds = Dict{Symbol, Float64}()
+    for name in names
+        record = read_meta(s, name)
+        record === nothing || (seconds[name] = record.seconds)
+    end
+    return seconds
+end
+
 # Returns the names to force: all of them if the Manifest changed and the user asked for that.
 function manifest_forced(store::Store, root::AbstractString, selected, track_manifest::Bool)
     changes = manifest_changes(store, root)
@@ -191,7 +201,7 @@ end
 """
     tar_make(p::Pipeline; names = nothing, force = false, store = default_store_path(),
              root = nothing, keep_going = false, track_manifest = false,
-             check_stale = true, io = stdout)
+             check_stale = true, jobs = 1, io = stdout)
 
 Build the targets of `p` that are outdated, in dependency order, and return a
 [`BuildSummary`](@ref). With `names`, only those targets and everything they
@@ -209,6 +219,16 @@ would then describe code the session is not running.
 
 Values are kept in memory only while a target in this run still needs them, so
 memory use follows the width of the pipeline, not its length.
+
+With `jobs = n` (or `:auto`, one per default thread), up to `n` independent
+targets and branches run at once, each as a Julia task; targets on the longest
+remaining path (by their last build times) start first. A target occupies its
+`slots` of the `n` while it runs, and `deployment = :main` targets run in the
+calling task. Concurrent targets share the process: they must not `cd`, change
+`ENV` or mutate their arguments (consumers of one upstream share its value),
+and BLAS-heavy targets may want `BLAS.set_num_threads(1)`. After a failure,
+running jobs are finished and committed before the error is rethrown; on
+interrupt, running jobs are waited for (interrupt again to abandon them).
 """
 function tar_make(
     p::Pipeline;
@@ -219,9 +239,11 @@ function tar_make(
     keep_going::Bool = false,
     track_manifest::Bool = false,
     check_stale::Bool = true,
+    jobs::Union{Integer, Symbol} = 1,
     io::IO = stdout,
     observe::Function = ctx -> nothing,
 )
+    slots = resolve_jobs(jobs)
     rootdir = something(root, project_root())
     s = store isa Store ? store : open_store(store)
     selected = selected_order(p, names)
@@ -243,18 +265,12 @@ function tar_make(
         force ? selected : manifest_forced(s, rootdir, selected, track_manifest),
     )
     # Relative paths in file targets are relative to the project root.
-    cd(rootdir) do
-        drain!(ReadyQueue(p, selected)) do name
-            t = get_target(p, name)
-            for job in plan!(ctx, t)
-                log_start!(ctx, job)
-                commit!(ctx, execute(job); keep_going)
-            end
-            release!(ctx, t)
-            ctx.observe(ctx)
-        end
-    end
-    sm = ctx.summary
+    priority = slots == 1 ?
+        Dict{Symbol, Float64}() :
+        critical_path(p, selected, last_seconds(s, selected))
+    queue = ReadyQueue(p, selected; priority)
+    cd(() -> run_jobs!(ctx, queue; jobs = slots, keep_going), rootdir)
+    sm = sort_summary!(ctx.summary, p)
     isempty(sm.errored) && record_manifest!(s, rootdir)
     log!(
         ctx,
@@ -338,6 +354,7 @@ function tar_make_fresh(
     keep_going::Bool = false,
     track_manifest::Bool = false,
     check_stale::Bool = true,
+    jobs::Union{Integer, Symbol} = 1,
     io::IO = stdout,
 )
     summary_path = tempname()
@@ -353,11 +370,13 @@ function tar_make_fresh(
         keep_going = $(repr(keep_going)),
         track_manifest = $(repr(track_manifest)),
         check_stale = $(repr(check_stale)),
+        jobs = $(repr(jobs)),
     )
     Targets.write_summary($(repr(summary_path)), summary)
     """
     project = Base.active_project()
-    cmd = `$(Base.julia_cmd()) --startup-file=no --project=$project -e $program`
+    threads = Threads.nthreads(:default)
+    cmd = `$(Base.julia_cmd()) --startup-file=no --threads=$threads --project=$project -e $program`
     try
         run(pipeline(cmd; stdout = io, stderr = io))
     catch e
@@ -861,7 +880,7 @@ end
         incremental = mktempdir()
         for step in 1:12
             code = render(spec)
-            build_source(code, incremental)
+            build_source(code, incremental; jobs = isodd(step) ? 1 : 4)
             @test isempty(outdated_source(code, incremental))
             clean = mktempdir()
             build_source(code, clean)

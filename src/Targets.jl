@@ -60,6 +60,9 @@ export tar_make, tar_outdated, BuildSummary
 
 include("branching.jl")
 
+include("dispatch.jl")
+export tar_slots
+
 include("graph.jl")
 export tar_dot, tar_visnetwork
 

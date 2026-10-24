@@ -208,22 +208,27 @@ end
 function commit_branch!(ctx::BuildContext, r::JobResult; keep_going::Bool)
     job = r.job
     t = job.target
-    progress = ctx.branching[t.name]
-    progress.pending -= 1
     if failed(r)
         record_failure!(ctx, t, r.exception; key = job.key)
-        progress.failure === nothing && (progress.failure = r.exception)
         log!(ctx, "✖ $(job.key): $(first(sprint(showerror, r.exception), 200))")
+    else
+        write_meta(ctx.store, job.key, job_record(r))
+        log!(ctx, "✔ $(job.key) $(round(r.seconds; digits = 2))s")
+    end
+    # a sibling branch already failed the target and the build is stopping
+    progress = get(ctx.branching, t.name, nothing)
+    progress === nothing && return false
+    progress.pending -= 1
+    if failed(r)
+        progress.failure === nothing && (progress.failure = r.exception)
         if !keep_going
             push!(ctx.summary.errored, t.name)
             delete!(ctx.branching, t.name)
             throw(r.exception)
         end
     else
-        write_meta(ctx.store, job.key, job_record(r))
         progress.hashes[job.branch] = r.value_hash
         push!(progress.built, job.branch)
-        log!(ctx, "✔ $(job.key) $(round(r.seconds; digits = 2))s")
     end
     progress.pending > 0 && return false
     finish_branching!(ctx, progress)

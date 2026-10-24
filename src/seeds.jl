@@ -124,6 +124,9 @@ end
     subset = mktempdir()
     build_source(code("[:a, :b, :c]"), subset; names = [:b])
     @test read_values(subset, :b) == (values[2],)
+    concurrent = mktempdir()
+    build_source(code("[:a, :b, :c]"), concurrent; jobs = 4)
+    @test read_values(concurrent, :a, :b, :c) == values
 
     s = build_source(code("[:a, :b, :c]"; seed = 1), full)
     @test s.built == [:a, :b, :c]

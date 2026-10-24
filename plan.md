@@ -609,6 +609,8 @@ The `Channel` is the only object shared between tasks, and it is thread-safe; `u
   - Slots: with `jobs = 4`, a `slots = :all` target never overlaps another job (entry and exit logs), starts only after the jobs running before it finish, and is not overtaken by smaller ready branches; `tar_slots()` returns 4 inside it and 1 in a default target; a `slots = 2` target overlaps at most two single-slot targets.
   - A guard test item that `src/` contains no `threadid(` or `@threads`.
 
+*Status: implemented in `src/dispatch.jl` (`run_jobs!`, `tar_slots`), with priorities from `critical_path` in `src/scheduler.jl`; `slots`/`deployment` are `target` options. Notes from implementation: a ready target is planned only when no planned job is waiting for slots, so with `jobs = 1` planning, execution and logs interleave exactly as before; priorities are used only when `jobs > 1` (with `jobs = 1` the order stays `p.order`); a branching target's own record has no `seconds`, so it gets no critical-path weight; `fresh = true` forwards `jobs` and starts the subprocess with the session's default thread count. `check_mutation` is a separate step (below).*
+
 ### Phase 12: Distributed and HPC workers
 
 Once Phase 11 has a job/result protocol, add a second executor that sends jobs to `Distributed` worker processes, including ones started by ClusterManagers.jl or SlurmClusterManager.jl.
