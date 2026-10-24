@@ -5,6 +5,7 @@ using Dates: Dates
 using Downloads: Downloads
 using Graphs: SimpleDiGraph, add_edge!, inneighbors, nv, outneighbors
 using JLD2: JLD2
+using Logging: Logging
 using JuliaSyntax:
     JuliaSyntax,
     SyntaxNode,
@@ -70,7 +71,7 @@ export tar_make, tar_outdated, BuildSummary
 include("branching.jl")
 
 include("errors.jl")
-export tar_workspace, @tar_workspace, tar_rerun
+export tar_workspace, @tar_workspace, tar_rerun, tar_errored, tar_traceback
 
 include("replicate.jl")
 export tar_rep, tar_map_rep

@@ -109,10 +109,13 @@ function attempt(job::Job)
     try
         job.load_error === nothing || throw(job.load_error)
         before = CHECK_MUTATION[] ? map(canonical_hash, job.args) : nothing
-        value = call_target(job.target.f, job.args, job.seed)
+        value, warnings = collecting_warnings(
+            () -> call_target(job.target.f, job.args, job.seed),
+        )
         seconds = elapsed()
         before === nothing || check_unmutated(job, before)
         consumer_value, vhash, stored = persist_value(job, value)
+        stored = merge(stored, (; warnings))
         return JobResult(job, consumer_value, vhash, stored, seconds, nothing, nothing)
     catch e
         e isa InterruptException && rethrow()

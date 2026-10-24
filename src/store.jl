@@ -230,6 +230,10 @@ Base.@kwdef struct Record
     elements_recorded::Bool = false
     # Ids of failed branches left out of an `error = :trim` target's value.
     trimmed::Vector{String} = String[]
+    # The user's stack frames of the last failure, innermost first.
+    traceback::Vector{String} = String[]
+    # Warnings logged while the target last ran.
+    warnings::Vector{String} = String[]
 end
 
 Base.:(==)(a::Record, b::Record) = all(

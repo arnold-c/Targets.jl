@@ -255,7 +255,7 @@ function commit_branch!(ctx::BuildContext, r::JobResult; keep_going::Bool)
     job = r.job
     t = job.target
     if failed(r)
-        record_failure!(ctx, t, r.exception; key = job.key)
+        record_failure!(ctx, t, r.exception; key = job.key, backtrace = r.backtrace)
         log!(ctx, "✖ $(job.key): $(first(sprint(showerror, r.exception), 200))")
     else
         write_meta(ctx.store, job.key, job_record(r))

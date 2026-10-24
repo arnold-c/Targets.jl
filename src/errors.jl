@@ -1,6 +1,81 @@
 ## Error handling: error modes (see the `error` option of `target`) and
 ## workspaces, which save what is needed to reproduce a failed call.
 
+"""
+    user_frames(backtrace)
+
+The stack frames of a failure that belong to the target's own code: everything
+inside the call Targets made, without Targets' or the `invokelatest` frames.
+"""
+function user_frames(backtrace)
+    backtrace === nothing && return String[]
+    frames = stacktrace(backtrace)
+    # every target is called through `call_target`; what lies inside it is the user's
+    ours(fr) = occursin("call_target", string(fr.func))
+    stop = findfirst(ours, frames)
+    user = frames[1:(stop === nothing ? end : stop - 1)]
+    # the frames between Targets and the user's function (scoped values, world age)
+    while !isempty(user) && user[end].func in (:with, :invokelatest, :invoke_in_world)
+        pop!(user)
+    end
+    return [string(fr) for fr in user]
+end
+
+"""
+    tar_errored(; store = default_store_path())
+
+Targets (and branches) whose last build failed, as a vector of
+`(; name, error, built_at)`.
+"""
+function tar_errored(; store::Union{Store, AbstractString} = default_store_path())
+    s = as_store(store)
+    rows = NamedTuple{(:name, :error, :built_at), Tuple{String, String, String}}[]
+    for key in meta_keys(s)
+        r = read_meta(s, key)::Record
+        isempty(r.error) ||
+            push!(rows, (name = key, error = r.error, built_at = r.built_at))
+    end
+    return rows
+end
+
+"""
+    tar_traceback(key; store = default_store_path())
+
+The stack frames of the target's (or branch's) last failure, from its own code
+inward, without Targets' frames.
+"""
+function tar_traceback(key; store::Union{Store, AbstractString} = default_store_path())
+    r = read_meta(as_store(store), key)
+    r === nothing && error("no record for `$key`")
+    return r.traceback
+end
+
+## Capturing warnings
+
+"Passes every log record on to `parent`, keeping the messages of warnings and errors."
+struct WarningCollector <: Logging.AbstractLogger
+    parent::Logging.AbstractLogger
+    messages::Vector{String}
+    lock::ReentrantLock
+end
+WarningCollector(parent) = WarningCollector(parent, String[], ReentrantLock())
+
+Logging.min_enabled_level(l::WarningCollector) = Logging.min_enabled_level(l.parent)
+Logging.shouldlog(l::WarningCollector, args...) = Logging.shouldlog(l.parent, args...)
+Logging.catch_exceptions(l::WarningCollector) = Logging.catch_exceptions(l.parent)
+function Logging.handle_message(l::WarningCollector, level, message, args...; kwargs...)
+    level >= Logging.Warn &&
+        lock(() -> push!(l.messages, first(string(message), 500)), l.lock)
+    return Logging.handle_message(l.parent, level, message, args...; kwargs...)
+end
+
+"Call `f()` and return its result with the warnings it logged (also from tasks it spawns)."
+function collecting_warnings(f)
+    collector = WarningCollector(Logging.current_logger())
+    value = Logging.with_logger(f, collector)
+    return value, collector.messages
+end
+
 workspace_path(s::Store, key) = joinpath(s.root, "workspaces", string(key) * ".jld2")
 
 """
@@ -194,6 +269,32 @@ end
     end
     @test_throws "needs a branching target" target(:x, () -> 1; error = :trim)
     @test_throws "error must be" target(:x, () -> 1; error = :ignore)
+end
+
+@testitem "failures keep a traceback of the user's frames; warnings are recorded" begin
+    using Targets: read_meta, open_store
+    inner(x) = x > 0 ? error("deep") : x
+    outer(x) = inner(x) + 1
+    mktempdir() do dir
+        store = joinpath(dir, "_targets")
+        p = tar_pipeline(
+            target(:w, () -> (@warn "careful"; 1)),
+            target(:bad, w -> outer(w); error = :continue),
+        )
+        io = IOBuffer()
+        s = @test_logs (:warn, "careful") match_mode = :any tar_make(
+            p;
+            store,
+            root = dir,
+            io,
+        )
+        @test read_meta(open_store(store), :w).warnings == ["careful"]
+        @test occursin("1 with warnings", String(take!(io)))
+        tb = tar_traceback(:bad; store)
+        @test any(f -> occursin("inner", f), tb) && any(f -> occursin("outer", f), tb)
+        @test !any(f -> occursin("call_target", f) || occursin("execute", f), tb)
+        @test only(tar_errored(; store)).name == "bad"
+    end
 end
 
 @testitem "a failed target leaves a workspace to rerun it from" begin

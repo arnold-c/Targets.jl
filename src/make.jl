@@ -56,6 +56,7 @@ struct BuildContext
     remaining::Dict{Symbol, Int}
     branching::Dict{Symbol, BranchProgress}
     nulled::Set{Symbol} # failed `error = :null` targets: consumers get `nothing`
+    warned::Set{String} # keys of jobs that logged warnings
     summary::BuildSummary
     observe::Function
 end
@@ -93,6 +94,7 @@ function BuildContext(
         consumer_counts(p, selected),
         Dict{Symbol, BranchProgress}(),
         Set{Symbol}(),
+        Set{String}(),
         BuildSummary(),
         observe,
     )
@@ -286,7 +288,8 @@ function tar_make(
     log!(
         ctx,
         "summary: $(length(sm.built)) built, $(length(sm.skipped)) up to date, " *
-            "$(length(sm.errored)) errored, $(length(sm.blocked)) blocked",
+            "$(length(sm.errored)) errored, $(length(sm.blocked)) blocked" *
+            (isempty(ctx.warned) ? "" : ", $(length(ctx.warned)) with warnings"),
     )
     return sm
 end
@@ -484,10 +487,11 @@ function commit!(ctx::BuildContext, r::JobResult; keep_going::Bool)
         log!(ctx, "↻ $(job.key) attempt $i failed, retrying: $message")
     end
     failed(r) ? keep_workspace!(ctx, r) : delete_workspace!(ctx.store, job.key)
+    isempty(get(r.stored, :warnings, String[])) || push!(ctx.warned, job.key)
     job.branch > 0 && return commit_branch!(ctx, r; keep_going)
     t = job.target
     if failed(r)
-        record_failure!(ctx, t, r.exception)
+        record_failure!(ctx, t, r.exception; backtrace = r.backtrace)
         push!(ctx.summary.errored, t.name)
         log!(ctx, "✖ $(t.name): $(first(sprint(showerror, r.exception), 200))")
         t.error === :null && null_value!(ctx, t)
@@ -518,10 +522,14 @@ end
 log_start!(ctx::BuildContext, job::Job) = log!(ctx, "▶ $(job.key) ($(job.reason))")
 
 # Record the failure but leave the last good object in place.
-function record_failure!(ctx::BuildContext, t::Target, e; key = t.name)
+function record_failure!(ctx::BuildContext, t::Target, e; key = t.name, backtrace = nothing)
     previous = something(read_meta(ctx.store, key), Record(; format = record_format(t)))
     message = first(sprint(showerror, e), 2000)
-    write_meta(ctx.store, key, update(previous; error = message))
+    write_meta(
+        ctx.store,
+        key,
+        update(previous; error = message, traceback = user_frames(backtrace)),
+    )
 end
 
 @testitem "a second run with no changes builds nothing" setup = [SourceFixtures] begin

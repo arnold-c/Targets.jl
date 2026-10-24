@@ -709,6 +709,8 @@ read_value(::JLD2Format, path) = JLD2.load(path, "value")
 
 **15.4 Tracebacks and warnings.** `record_failure!` keeps only the first 2000 characters of the message. Also store a `traceback` field: the stack frames up to the `invokelatest` call, so Targets' own frames are left out. Add `tar_errored()` (name, error, built_at) and `tar_traceback(:name)`. Capture `@warn` log records emitted during a target with a wrapping logger (`Logging.with_logger` is scoped to the task and inherited by tasks it spawns, so it works per job) and store them in a `warnings` record field; the summary line counts targets with warnings.
 
+*Status (15.4): implemented in `src/errors.jl`. The `traceback` is the frames inside `call_target` (the user's function and everything it called, Base frames included), and `warnings` holds `@warn`/`@error` messages, captured by a `WarningCollector` logger that also passes every record on. `tar_errored()` and `tar_traceback(key)` read them, and the summary line adds ", N with warnings" only when there are some, so earlier logs are unchanged.*
+
 - **Tests.** Each error mode against a three-target chain and a branching target; a target failing twice then succeeding with `retries = 2`; `tar_rerun` reproduces the exception; the workspace is deleted after a successful rebuild; the traceback contains the user function's frame and no `Targets.build!` frame.
 
 ### Phase 16: More cues
