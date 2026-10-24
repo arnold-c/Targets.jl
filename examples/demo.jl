@@ -9,11 +9,12 @@
 #
 #   cd examples/.demo
 #   julia --project=.                 # or: pkg> activate .
-#   julia> using Targets
+#   julia> using Targets, CairoMakie
 #   julia> tar_make()                 # builds; run it again to see "up to date"
 #   julia> tar_outdated()
 #   julia> tar_read(:report)
 #   julia> print(tar_dot())
+#   julia> tar_visnetwork()           # needs CairoMakie
 #
 # To try an edit, regenerate the files with one change (from that same REPL):
 #
@@ -39,9 +40,13 @@ using Targets
 demo_dir() = joinpath(@__DIR__, ".demo")
 demo_store(dir = demo_dir()) = joinpath(dir, "_targets")
 
+# Whether the demo script in `dir` already loads CairoMakie (so regenerating keeps it).
+uses_makie(dir) = isfile(demo_script(dir)) &&
+    occursin("using CairoMakie", read(demo_script(dir), String))
+
 """
     write_demo(dir; scale = 3, note = "", data = "1.0 2.0 NaN 4.0", grid = "[0.1, 0.5, 1.0]",
-               discount = "x", shifts = "(1, 2)")
+               discount = "x", shifts = "(1, 2)", makie = uses_makie(dir))
 
 Write the demo project into `dir`. Each keyword changes one thing:
 
@@ -52,6 +57,7 @@ Write the demo project into `dir`. Each keyword changes one thing:
 - `discount`: an expression inside a helper two calls deep from the `scores` target
 - `shifts`: the values that generate one `shifted_<k>` target each (static branching),
   combined by `shifted_total`
+- `makie`: add `using CairoMakie` to `_targets.jl` (for `tar_visnetwork`); kept on regeneration
 """
 function write_demo(
     dir::AbstractString = demo_dir();
@@ -61,6 +67,7 @@ function write_demo(
     grid = "[0.1, 0.5, 1.0]",
     discount = "x",
     shifts = "(1, 2)",
+    makie = uses_makie(dir),
 )
     mkpath(joinpath(dir, "data"))
     write(joinpath(dir, "data", "raw.csv"), data)
@@ -87,7 +94,7 @@ function write_demo(
         joinpath(dir, "_targets.jl"),
         """
         using Targets
-        Base.include(@__MODULE__, joinpath(@__DIR__, "analysis.jl"))
+        $(makie ? "using CairoMakie\n" : "")Base.include(@__MODULE__, joinpath(@__DIR__, "analysis.jl"))
 
         base = @pipeline begin
             @target raw_file = "data/raw.csv"  format = :file
@@ -115,7 +122,7 @@ Write the demo project and give it its own environment with this repository's
 Targets developed into it, ready to `activate` and `tar_make()`.
 """
 function demo_setup(dir::AbstractString = demo_dir())
-    write_demo(dir)
+    write_demo(dir; makie = true)
     # Always (re)resolve: the Manifest records Targets' dependencies and extensions,
     # which go stale whenever the package's Project.toml changes.
     let
@@ -136,8 +143,11 @@ function demo_setup(dir::AbstractString = demo_dir())
     println(
         "  cd(\"",
         relpath(dir),
-        "\"); then start julia with --project=. and run tar_make()",
+        "\"); then start julia with --project=. and run:",
     )
+    println("  using Targets, CairoMakie")
+    println("  tar_make()")
+    println("  tar_visnetwork()")
     return dir
 end
 
