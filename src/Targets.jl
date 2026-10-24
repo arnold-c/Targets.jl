@@ -69,7 +69,7 @@ include("scheduler.jl")
 include("jobs.jl")
 
 include("executors.jl")
-export Executor, TaskExecutor
+export Executor, TaskExecutor, DistributedExecutor
 
 include("make.jl")
 export tar_make, tar_outdated, BuildSummary

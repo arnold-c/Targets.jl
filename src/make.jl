@@ -519,7 +519,8 @@ function commit!(ctx::BuildContext, r::JobResult; keep_going::Bool)
         return true
     end
     write_meta(ctx.store, t.name, job_record(r))
-    ctx.remaining[t.name] > 0 && (ctx.values[t.name] = r.value)
+    # a value computed on another process is loaded from the store when needed
+    ctx.remaining[t.name] > 0 && !(r.value isa Unloaded) && (ctx.values[t.name] = r.value)
     ctx.value_hashes[t.name] = r.value_hash
     push!(ctx.summary.built, t.name)
     event!(ctx, t.name, :built; r.seconds)

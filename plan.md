@@ -623,6 +623,8 @@ Once Phase 11 has a job/result protocol, add a second executor that sends jobs t
 - **Fresh builds.** `fresh = true` makes the subprocess the main process; workers attach to it.
 
 *Status: the executor interface is implemented in `src/executors.jl` (`Executor`, `TaskExecutor`, `capacity`/`submit!`/`take_result!`/`start!`/`stop!`); `run_jobs!` takes an executor.*
+
+*Status (`DistributedExecutor`): implemented, with the type in the core and its behaviour in `ext/TargetsDistributedExt.jl`. Workers load the script once (`worker_pipeline`), and start-up checks the shared filesystem (a token file) and that every target's command and code hashes match the main process's. Workers write objects to the store and send back only a `RemoteResult`; consumers then load the value from the store (`Unloaded`). Deviations: (1) arguments go to the worker with the job (Distributed serialization) instead of being read from the store, which avoids describing every argument as a store reference but costs a copy per job; (2) a failure on a worker reaches the main process as a `RemoteTargetError` message, so its traceback and workspace backtrace are not kept; (3) not done: `pool`/named executors and workers attaching to a `fresh = true` subprocess. Slots: a job goes to the worker with the most free slots and is granted at most `slots_per_worker`, so a `slots = :all` target drains every worker and runs alone on one. Tested with two local `addprocs` workers.*
 - **Tests.** `addprocs(2)` locally: same results and records as a task-based build; a worker whose pipeline differs is rejected; Phase 10 seeds agree across executors.
 
 ### Phase 13: Pluggable storage formats
