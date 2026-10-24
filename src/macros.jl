@@ -24,7 +24,17 @@ struct TargetDecl
     line::LineNumberNode
 end
 
-const TARGET_OPTIONS = (:format, :pattern, :cue, :seed, :slots, :deployment, :error)
+const TARGET_OPTIONS = (
+    :format,
+    :pattern,
+    :cue,
+    :seed,
+    :slots,
+    :deployment,
+    :error,
+    :retries,
+    :retry_delay,
+)
 const PIPELINE_OPTIONS = (:track, :seed)
 
 function parse_target_decl(ex, line::LineNumberNode)

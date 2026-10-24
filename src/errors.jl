@@ -26,6 +26,24 @@
     end
 end
 
+@testitem "retries rerun a failing target within one build" begin
+    attempts = Ref(0)
+    flaky() = (attempts[] += 1; attempts[] < 3 ? error("flaky $(attempts[])") : attempts[])
+    mktempdir() do dir
+        store = joinpath(dir, "_targets")
+        io = IOBuffer()
+        p = tar_pipeline(target(:x, () -> flaky(); retries = 2, cue = :always))
+        @test tar_make(p; store, root = dir, io).built == [:x]
+        @test tar_read(:x; store) == 3
+        log = String(take!(io))
+        @test occursin("x attempt 1 failed", log) && occursin("x attempt 2 failed", log)
+        attempts[] = 0
+        q = tar_pipeline(target(:x, () -> flaky(); retries = 1, cue = :always))
+        @test_throws "flaky 2" tar_make(q; store, root = dir, io = devnull)
+    end
+    @test_throws "must not be negative" target(:x, () -> 1; retries = -1)
+end
+
 @testitem "error = :trim drops failed branches and retries them" setup = [
     SourceFixtures,
 ] begin

@@ -697,6 +697,8 @@ read_value(::JLD2Format, path) = JLD2.load(path, "value")
 
 **15.2 Retries.** `retries = 0` and `retry_delay = 0` per target, for flaky I/O and cluster nodes. Each attempt is logged, only the last error is recorded, `InterruptException` is never retried, and each attempt uses the same seed (so retrying a deterministic failure is pointless; document this).
 
+*Status (15.2): implemented. `execute` retries inside the job, so a retry holds its slots and never re-enters the scheduler; failed attempts travel in `JobResult.retried` and are logged at commit (`↻ key attempt n failed, retrying: ...`). An argument-loading error is never retried.*
+
 **15.3 Workspaces.** When a target or branch fails, save what is needed to reproduce the call to `_targets/workspaces/<key>.jld2`: the argument values that were in memory or are not otherwise stored (the branch element, and upstream values from targets whose objects may be rebuilt later; copies by default, `workspace = :refs` records store keys and value hashes only), plus the seed, error and backtrace. Delete the workspace when the target next builds successfully.
 
 - `tar_workspace(:name)` returns the arguments as a `NamedTuple`; `@tar_workspace name` assigns them to same-named variables in the caller's scope, like `@tar_load`.

@@ -22,6 +22,8 @@ struct Target
     slots::Union{Symbol, Int}
     deployment::Symbol
     error::Symbol
+    retries::Int
+    retry_delay::Float64
 end
 
 "A copy of target `t` with some fields replaced."
@@ -61,6 +63,10 @@ the build unless `tar_make(; keep_going = true)`; `:continue` never stops it,
 but blocks the target's descendants; `:null` gives consumers `nothing` so they
 still run; `:trim` (branching targets) leaves failed branches out of the
 target's value. In every mode the failed target is retried on the next build.
+
+`retries` reruns a failing target up to that many more times within one build,
+waiting `retry_delay` seconds between attempts, for flaky I/O. Every attempt
+uses the same seed, so retrying a deterministic failure is pointless.
 """
 function target(
     name::Symbol,
@@ -74,6 +80,8 @@ function target(
     slots::Union{Symbol, Integer} = 1,
     deployment::Symbol = :spawn,
     error::Symbol = :stop,
+    retries::Integer = 0,
+    retry_delay::Real = 0,
 )
     validate_name(name)
     format in (:file, :url) || resolve_format(format)
@@ -99,6 +107,8 @@ function target(
         ))
     (error === :trim && pattern === nothing) &&
         throw(ArgumentError("target `$name`: error = :trim needs a branching target"))
+    (retries >= 0 && retry_delay >= 0) ||
+        throw(ArgumentError("target `$name`: retries and retry_delay must not be negative"))
     deployment in DEPLOYMENTS ||
         throw(ArgumentError(
             "target `$name`: deployment must be one of $DEPLOYMENTS, got `$deployment`",
@@ -116,6 +126,8 @@ function target(
         slots isa Integer ? Int(slots) : slots,
         deployment,
         error,
+        Int(retries),
+        Float64(retry_delay),
     )
 end
 

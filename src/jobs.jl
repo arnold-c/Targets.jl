@@ -43,7 +43,18 @@ struct JobResult
     seconds::Float64
     exception::Any
     backtrace::Any
+    retried::Vector{String} # messages of failed attempts before this outcome
 end
+JobResult(job, value, value_hash, stored, seconds, exception, backtrace) = JobResult(
+    job,
+    value,
+    value_hash,
+    stored,
+    seconds,
+    exception,
+    backtrace,
+    String[],
+)
 
 failed(r::JobResult) = r.exception !== nothing
 
@@ -70,10 +81,29 @@ end
 """
     execute(job) -> JobResult
 
-Call the job's function with its arguments and seed, and write its object.
-Every exception except `InterruptException` is returned inside the result.
+Call the job's function with its arguments and seed, and write its object,
+retrying a failure up to the target's `retries` times. Every exception except
+`InterruptException` is returned inside the result.
 """
 function execute(job::Job)
+    retried = String[]
+    while true
+        r = attempt(job)
+        retry = failed(r) &&
+            job.load_error === nothing &&
+            length(retried) < job.target.retries
+        retry ||
+            return JobResult(
+                (getfield(r, f) for f in fieldnames(JobResult) if f !== :retried)...,
+                retried,
+            )
+        push!(retried, first(sprint(showerror, r.exception), 200))
+        sleep(job.target.retry_delay)
+    end
+end
+
+"One attempt at a job."
+function attempt(job::Job)
     started = time_ns()
     elapsed() = (time_ns() - started) / 1.0e9
     try

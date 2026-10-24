@@ -480,6 +480,9 @@ failure is rethrown after it is recorded.
 """
 function commit!(ctx::BuildContext, r::JobResult; keep_going::Bool)
     job = r.job
+    for (i, message) in enumerate(r.retried)
+        log!(ctx, "↻ $(job.key) attempt $i failed, retrying: $message")
+    end
     job.branch > 0 && return commit_branch!(ctx, r; keep_going)
     t = job.target
     if failed(r)
