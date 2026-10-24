@@ -621,6 +621,8 @@ Once Phase 11 has a job/result protocol, add a second executor that sends jobs t
 - **Slots across workers.** A `DistributedExecutor` has one slot per worker process by default (`slots_per_worker` to change it), and the 11.3 accounting is unchanged: `slots = :all` drains every worker and runs the target alone on one of them, where it can use that worker's threads.
 - **Pools.** For clusters where draining everything is wasteful, `pool = :bigmem` per target sends it to a named executor (`executor = Dict(:default => ..., :bigmem => ...)`), and slots are counted per pool, so a heavy target can have a dedicated pool while other targets keep running on the default one. One cluster job per target is out of scope.
 - **Fresh builds.** `fresh = true` makes the subprocess the main process; workers attach to it.
+
+*Status: the executor interface is implemented in `src/executors.jl` (`Executor`, `TaskExecutor`, `capacity`/`submit!`/`take_result!`/`start!`/`stop!`); `run_jobs!` takes an executor.*
 - **Tests.** `addprocs(2)` locally: same results and records as a task-based build; a worker whose pipeline differs is rejected; Phase 10 seeds agree across executors.
 
 ### Phase 13: Pluggable storage formats

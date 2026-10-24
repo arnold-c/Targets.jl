@@ -41,22 +41,23 @@ function execute_granted(job::Job, slots::Int)
 end
 
 """
-    run_jobs!(ctx, queue; jobs, keep_going)
+    run_jobs!(ctx, queue, executor; keep_going)
 
 Plan, execute and commit every target in `queue`, running up to `jobs` slots'
-worth of jobs at once. Ready jobs start strictly in queue order: when the next
+worth of jobs at once (the executor's capacity). Ready jobs start strictly in queue order: when the next
 one does not fit, the scheduler waits rather than letting smaller jobs overtake
 it. With `jobs = 1`, and for `deployment = :main` targets, jobs run in this
 task. After a failure without `keep_going`, nothing new starts, running jobs
 are committed, and the failure is rethrown.
 """
-function run_jobs!(ctx::BuildContext, queue::ReadyQueue; jobs::Int, keep_going::Bool)
-    state = (
-        pending = Job[],
-        results = Channel{JobResult}(Inf),
-        running = Ref(0),
-        used = Ref(0),
-    )
+function run_jobs!(
+    ctx::BuildContext,
+    queue::ReadyQueue,
+    executor::Executor;
+    keep_going::Bool,
+)
+    jobs = capacity(executor)
+    state = (pending = Job[], executor, running = Ref(0), used = Ref(0))
     failure = Ref{Any}(nothing)
     try
         while true
@@ -70,7 +71,7 @@ function run_jobs!(ctx::BuildContext, queue::ReadyQueue; jobs::Int, keep_going::
                 (failure[] !== nothing || idle) && break
                 continue
             end
-            r = take!(state.results)
+            r = take_result!(executor)
             state.running[] -= 1
             state.used[] -= job_slots(r.job.target, jobs)
             handle_result!(ctx, queue, r, failure; keep_going)
@@ -108,14 +109,13 @@ function dispatch!(ctx::BuildContext, queue::ReadyQueue, state, failure; jobs, k
         popfirst!(state.pending)
         log_start!(ctx, job)
         started = true
-        if jobs == 1 || job.target.deployment === :main
+        if runs_inline(state.executor, job)
             handle_result!(ctx, queue, execute_granted(job, slots), failure; keep_going)
             return started # planning may have new work now
         end
         state.used[] += slots
         state.running[] += 1
-        results = state.results
-        Threads.@spawn put!(results, execute_granted(job, slots))
+        submit!(state.executor, job, slots)
     end
     return started
 end
@@ -154,7 +154,7 @@ function abandon!(ctx::BuildContext, state)
         "interrupted: waiting for $(state.running[]) running job(s); interrupt again to abandon them",
     )
     try
-        foreach(_ -> take!(state.results), 1:state.running[])
+        foreach(_ -> take_result!(state.executor), 1:state.running[])
     catch
     end
 end

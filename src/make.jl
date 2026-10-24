@@ -209,7 +209,8 @@ end
 """
     tar_make(p::Pipeline; names = nothing, force = false, store = default_store_path(),
              root = nothing, keep_going = false, track_manifest = false,
-             check_stale = true, jobs = 1, check_mutation = false, io = stdout)
+             check_stale = true, jobs = 1, executor = nothing, check_mutation = false,
+             io = stdout)
 
 Build the targets of `p` that are outdated, in dependency order, and return a
 [`BuildSummary`](@ref). With `names`, only those targets and everything they
@@ -252,11 +253,13 @@ function tar_make(
     track_manifest::Bool = false,
     check_stale::Bool = true,
     jobs::Union{Integer, Symbol} = 1,
+    executor::Union{Nothing, Executor} = nothing,
     check_mutation::Bool = false,
     io::IO = stdout,
     observe::Function = ctx -> nothing,
 )
-    slots = resolve_jobs(jobs)
+    exec = something(executor, TaskExecutor(jobs))
+    slots = capacity(exec)
     rootdir = something(root, project_root())
     s = store isa Store ? store : open_store(store)
     selected = selected_order(p, names)
@@ -285,7 +288,14 @@ function tar_make(
     event!(ctx, "", :run_started)
     try
         with(CHECK_MUTATION => check_mutation) do
-            cd(() -> run_jobs!(ctx, queue; jobs = slots, keep_going), rootdir)
+            cd(rootdir) do
+                start!(exec, ctx)
+                try
+                    run_jobs!(ctx, queue, exec; keep_going)
+                finally
+                    stop!(exec)
+                end
+            end
         end
     finally
         event!(ctx, "", :run_finished)
