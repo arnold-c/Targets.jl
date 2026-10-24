@@ -155,6 +155,7 @@ function process_branching!(ctx::BuildContext, t::Target, cmd, code; keep_going:
             cmd,
             code,
             dep_hashes;
+            seed = seed_string(resolve_seed(ctx.pipeline, t, key)),
             forced,
             root = ctx.root,
             key,
@@ -193,6 +194,7 @@ function process_branching!(ctx::BuildContext, t::Target, cmd, code; keep_going:
             value_hash,
             format = string(t.format),
             built_at = string(Dates.now(Dates.UTC)),
+            seed = seed_string(resolve_seed(ctx.pipeline, t)),
             branches = ids,
             branch_hashes = hashes,
         ),
@@ -229,7 +231,8 @@ function build_branch!(
     started = time_ns()
     element = pattern_element_value(ctx, t, i, el)
     args = Any[d == t.pattern ? element : get_value!(ctx, d) for d in t.deps]
-    value = Base.invokelatest(t.f, args...)
+    seed = resolve_seed(ctx.pipeline, t, key)
+    value = call_target(t.f, args, seed)
     seconds = (time_ns() - started) / 1.0e9
     path = write_object(ctx.store, key, value)
     vhash = object_hash(value, path)
@@ -245,6 +248,7 @@ function build_branch!(
             format = string(t.format),
             built_at = string(Dates.now(Dates.UTC)),
             seconds,
+            seed = seed_string(seed),
         ),
     )
     log!(ctx, "✔ $key $(round(seconds; digits = 2))s")

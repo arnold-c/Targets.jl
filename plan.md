@@ -519,6 +519,8 @@ Each target, and each branch, runs with an RNG seeded from its own name, so its 
 - **Julia versions.** Julia does not guarantee the default RNG stream across releases. Do *not* rebuild on a Julia upgrade (consistent with 4.1); document this and recommend StableRNGs.jl with `tar_seed()` where bit-for-bit reproducibility across Julia versions matters.
 - **Tests.** A random target returns the same value in a full build, a `names` subset build, a pipeline with targets reordered, and (after Phase 11) with `jobs > 1`; branches keep their values when the pattern is reordered; `rand()` in the session after `tar_make` is unaffected; changing `seed` rebuilds with `:seed_changed`.
 
+*Status: implemented in `src/seeds.jl` (`call_target` runs seeded calls in their own task and rethrows the original exception). `@pipeline seed = ...` and `@target ... seed = ...` are accepted too. Records written before this phase have no seed, so every seeded target rebuilds once (`:seed_changed`) after upgrading. A failure inside the task currently loses the user's backtrace; Phase 15.4 restores it.*
+
 ### Phase 11: Ready-queue scheduler and concurrent builds
 
 `tar_make(; jobs = n)` runs up to `n` independent targets and branches at once, as Julia tasks. Default `jobs = 1` keeps today's behavior. A target can claim several of the `n` slots, or all of them (`slots = :all`) so that nothing else runs while it does.

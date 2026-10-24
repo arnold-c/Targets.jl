@@ -15,6 +15,7 @@ A validated, immutable collection of targets with its dependency graph.
 `graph` has an edge `dep => dependent`; `order` is a deterministic build order.
 `track` lists extra modules or directories whose code counts as user code.
 `groups` maps each [`tar_map`](@ref) template name to its generated targets.
+`seed` is the pipeline seed that per-target seeds are derived from.
 """
 struct Pipeline
     targets::Vector{Target}
@@ -23,15 +24,22 @@ struct Pipeline
     order::Vector{Symbol}
     track::Vector{Any}
     groups::Dict{Symbol, Vector{Symbol}}
+    seed::Int
 end
 
 """
-    tar_pipeline(targets...; track = [])
+    tar_pipeline(targets...; track = [], seed = 0)
 
 Build a [`Pipeline`](@ref). Arguments may be targets or (nested) collections of
 targets, so comprehensions and [`tar_map`](@ref) results can be passed directly.
+`seed` is the pipeline seed: changing it rebuilds every target with
+`seed = :auto`.
 """
-tar_pipeline(ts...; track = []) = Pipeline(flatten_targets(ts), collect(Any, track))
+tar_pipeline(ts...; track = [], seed::Integer = 0) = Pipeline(
+    flatten_targets(ts),
+    collect(Any, track),
+    Int(seed),
+)
 
 flatten_targets(t::Target) = Target[t]
 flatten_targets(ts::Union{AbstractVector, Tuple}) = reduce(
@@ -44,13 +52,13 @@ flatten_targets(x) = throw(ArgumentError(
     "tar_pipeline() accepts targets or collections of targets, got `$(typeof(x))`",
 ))
 
-function Pipeline(targets::Vector{Target}, track::Vector{Any} = Any[])
+function Pipeline(targets::Vector{Target}, track::Vector{Any} = Any[], seed::Int = 0)
     index = build_index(targets)
     check_dependencies(targets, index)
     check_patterns(targets)
     graph = build_graph(targets, index)
     order = build_order(targets, graph)
-    return Pipeline(targets, index, graph, order, track, build_groups(targets, index))
+    return Pipeline(targets, index, graph, order, track, build_groups(targets, index), seed)
 end
 
 function build_groups(targets, index)

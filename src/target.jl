@@ -17,18 +17,25 @@ struct Target
     cue::Symbol
     source::Union{Nothing, Expr}
     group::Union{Nothing, Symbol}
+    seed::Union{Nothing, Symbol, Int}
 end
 
 "A copy of target `t` with some fields replaced."
-with_fields(t::Target; changes...) = Target(
-    (get(changes, f, getfield(t, f)) for f in fieldnames(Target))...,
-)
+with_fields(t::Target; changes...) = Target((
+    get(changes, f, getfield(t, f))
+    for f in fieldnames(Target)
+)...)
 
 """
-    target(name, f; deps = nothing, format = :jld2, pattern = nothing, cue = :thorough)
+    target(name, f; deps = nothing, format = :jld2, pattern = nothing, cue = :thorough,
+           seed = :auto)
 
 Declare a target. Unless `deps` is given, dependencies are the argument names
 of `f`, which must therefore have exactly one method with positional arguments.
+
+`seed` controls the random number generator `f` runs with: `:auto` seeds it
+from the pipeline seed and the target's name (see [`tar_seed`](@ref)), an
+integer pins the seed, and `nothing` leaves the session's generator alone.
 """
 function target(
     name::Symbol,
@@ -38,6 +45,7 @@ function target(
     pattern::Union{Nothing, Symbol} = nothing,
     cue::Symbol = :thorough,
     source::Union{Nothing, Expr} = nothing,
+    seed::Union{Nothing, Symbol, Integer} = :auto,
 )
     validate_name(name)
     format in FORMATS ||
@@ -50,7 +58,13 @@ function target(
         arg_names(f, name) :
         check_explicit_deps(f, name, collect(deps))
     foreach(validate_name, dependencies)
-    return Target(name, f, dependencies, format, pattern, cue, source, nothing)
+    seed isa Symbol &&
+        seed !== :auto &&
+        throw(ArgumentError(
+            "target `$name`: seed must be `:auto`, an integer or `nothing`, got `$seed`",
+        ))
+    seed_value = seed isa Integer ? Int(seed) : seed
+    return Target(name, f, dependencies, format, pattern, cue, source, nothing, seed_value)
 end
 
 function validate_name(name::Symbol)
@@ -143,4 +157,6 @@ end
     @test_throws "valid target name" target(:x, a -> 1; deps = [Symbol("bad dep")])
     @test_throws ArgumentError target(:x, () -> 1; format = :csv)
     @test_throws ArgumentError target(:x, () -> 1; cue = :sometimes)
+    @test_throws "seed must be" target(:x, () -> 1; seed = :random)
+    @test target(:x, () -> 1; seed = 3).seed == 3
 end

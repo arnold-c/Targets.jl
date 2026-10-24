@@ -13,6 +13,8 @@ using JuliaSyntax:
     last_byte,
     source_location
 using Preferences: Preferences
+using Random: Random
+using ScopedValues: ScopedValue, with
 using SHA: SHA
 using Serialization: Serialization
 using TOML: TOML
@@ -34,6 +36,9 @@ include("canonical.jl")
 include("source.jl")
 
 include("hashing.jl")
+
+include("seeds.jl")
+export tar_seed
 
 include("store.jl")
 export tar_meta

@@ -384,6 +384,7 @@ function process!(ctx::BuildContext, t::Target; keep_going::Bool)
         cmd,
         code,
         dep_hashes;
+        seed = seed_string(resolve_seed(ctx.pipeline, t)),
         forced = t.name in ctx.forced,
         root = ctx.root,
     )
@@ -443,7 +444,8 @@ function build!(
     started = time_ns()
     try
         args = Any[get_value!(ctx, d) for d in t.deps]
-        value = Base.invokelatest(t.f, args...)
+        seed = resolve_seed(ctx.pipeline, t)
+        value = call_target(t.f, args, seed)
         seconds = (time_ns() - started) / 1.0e9
         consumer_value, vhash, stored = commit_value!(ctx, t, value)
         write_meta(
@@ -458,6 +460,7 @@ function build!(
                 format = string(t.format),
                 built_at = string(Dates.now(Dates.UTC)),
                 seconds,
+                seed = seed_string(seed),
                 stored...,
             ),
         )

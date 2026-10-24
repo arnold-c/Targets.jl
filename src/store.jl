@@ -86,7 +86,8 @@ end
 function stored_groups(s::Store)
     isfile(joinpath(s.root, "store.toml")) || return Dict{Symbol, Vector{Symbol}}()
     return Dict{Symbol, Vector{Symbol}}(
-        Symbol(k) => Symbol.(v) for (k, v) in get(read_store_info(s), "groups", Dict())
+        Symbol(k) => Symbol.(v)
+        for (k, v) in get(read_store_info(s), "groups", Dict())
     )
 end
 
@@ -163,6 +164,8 @@ Base.@kwdef struct Record
     seconds::Float64 = 0.0
     error::String = ""
     julia_version::String = string(VERSION)
+    # The seed the target ran with (see seeds.jl), empty if it was not seeded.
+    seed::String = ""
     # File targets keep no object: the paths they returned, whether it was a single
     # path, and per-path stat signatures and content hashes (see files.jl).
     files::Vector{String} = String[]

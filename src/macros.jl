@@ -4,7 +4,7 @@
 ## into `tar_pipeline(target(...), ...)`. It adds no behaviour of its own.
 
 """
-    @target name = expression [format = ...] [pattern = ...] [cue = ...]
+    @target name = expression [format = ...] [pattern = ...] [cue = ...] [seed = ...]
 
 Declare a target inside [`@pipeline`](@ref). Dependencies are the other targets
 named in `expression`. Outside `@pipeline` it is an error, because dependency
@@ -24,7 +24,8 @@ struct TargetDecl
     line::LineNumberNode
 end
 
-const TARGET_OPTIONS = (:format, :pattern, :cue)
+const TARGET_OPTIONS = (:format, :pattern, :cue, :seed)
+const PIPELINE_OPTIONS = (:track, :seed)
 
 function parse_target_decl(ex, line::LineNumberNode)
     args = Any[a for a in ex.args[3:end] if !(a isa LineNumberNode)]
@@ -110,8 +111,8 @@ function expand_target(d::TargetDecl, names)
 end
 
 """
-    @pipeline [track = [...]] begin
-        @target name = expression [format = ...] [pattern = ...] [cue = ...]
+    @pipeline [track = [...]] [seed = ...] begin
+        @target name = expression [format = ...] [pattern = ...] [cue = ...] [seed = ...]
         ...
     end
 
@@ -131,11 +132,11 @@ macro pipeline(args...)
     targets = Any[expand_target(d, names) for d in decls]
     options = Any[]
     for opt in args[1:(end - 1)]
-        (Meta.isexpr(opt, :(=)) && opt.args[1] === :track) ||
+        (Meta.isexpr(opt, :(=)) && opt.args[1] in PIPELINE_OPTIONS) ||
             error(
-                "@pipeline accepts only a `track = [...]` option before its block, got `$opt`",
+                "@pipeline accepts only `track = [...]` and `seed = ...` options before its block, got `$opt`",
             )
-        push!(options, Expr(:kw, :track, opt.args[2]))
+        push!(options, Expr(:kw, opt.args[1], opt.args[2]))
     end
     call = Expr(
         :call,
@@ -264,6 +265,10 @@ end
         @test length(s.branches[:sizes]) == 2
         @test read_values(dir, :total) == (5,)
     end
+    p = @pipeline seed = 3 begin
+        @target a = 1 seed = 7
+    end
+    @test p.seed == 3 && p.targets[1].seed == 7
 end
 
 @testitem "errors in a macro target point at its line" setup = [SourceFixtures] begin
