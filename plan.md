@@ -705,6 +705,8 @@ read_value(::JLD2Format, path) = JLD2.load(path, "value")
 - `tar_rerun(:name)` calls the target's current function on the saved arguments with its seed, in the session, so the error can be inspected with Infiltrator.jl or Debugger.jl.
 - Values the workspace cannot save are listed in it rather than failing the save.
 
+*Status (15.3): implemented in `src/errors.jl`: `tar_workspace`, `@tar_workspace` and `tar_rerun`. A workspace is saved when a failure is committed and deleted when that key next builds. Not done: `workspace = :refs`; arguments are always copied, and those JLD2 cannot save are listed under `unsaved` and passed as `nothing`. `@tar_workspace` assigns globals in the calling module, since the names are only known at run time.*
+
 **15.4 Tracebacks and warnings.** `record_failure!` keeps only the first 2000 characters of the message. Also store a `traceback` field: the stack frames up to the `invokelatest` call, so Targets' own frames are left out. Add `tar_errored()` (name, error, built_at) and `tar_traceback(:name)`. Capture `@warn` log records emitted during a target with a wrapping logger (`Logging.with_logger` is scoped to the task and inherited by tasks it spawns, so it works per job) and store them in a `warnings` record field; the summary line counts targets with warnings.
 
 - **Tests.** Each error mode against a three-target chain and a branching target; a target failing twice then succeeding with `retries = 2`; `tar_rerun` reproduces the exception; the workspace is deleted after a successful rebuild; the traceback contains the user function's frame and no `Targets.build!` frame.

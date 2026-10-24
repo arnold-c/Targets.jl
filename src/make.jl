@@ -483,6 +483,7 @@ function commit!(ctx::BuildContext, r::JobResult; keep_going::Bool)
     for (i, message) in enumerate(r.retried)
         log!(ctx, "↻ $(job.key) attempt $i failed, retrying: $message")
     end
+    failed(r) ? keep_workspace!(ctx, r) : delete_workspace!(ctx.store, job.key)
     job.branch > 0 && return commit_branch!(ctx, r; keep_going)
     t = job.target
     if failed(r)

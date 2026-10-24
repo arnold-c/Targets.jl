@@ -70,6 +70,7 @@ export tar_make, tar_outdated, BuildSummary
 include("branching.jl")
 
 include("errors.jl")
+export tar_workspace, @tar_workspace, tar_rerun
 
 include("replicate.jl")
 export tar_rep, tar_map_rep
