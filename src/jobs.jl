@@ -121,6 +121,16 @@ function persist_value(job::Job, value)
         path = write_object(job.store, job.key, value; format = resolve_format(t.format))
         return value, object_hash(value, path), (;)
     end
+    if t.format == :url
+        urls, scalar = normalize_url_value(t, value)
+        state = url_state(urls)
+        (job.pattern_use === nothing || !scalar) ||
+            error(
+                "target `$(t.name)` is the pattern of `$(job.pattern_use)`, so it must return a vector of URLs",
+            )
+        stored = (; files = urls, file_scalar = scalar, file_hashes = state.hashes)
+        return (scalar ? first(urls) : urls), state.value_hash, stored
+    end
     if t.format == :file
         paths, scalar = normalize_file_value(t, value, job.root)
         state = file_state(job.root, paths)

@@ -181,7 +181,8 @@ end
 
 function object_format(s::Store, key, path::AbstractString)
     record = read_meta(s, key)
-    (record === nothing || record.format == "file") || return recorded_format(record.format)
+    (record === nothing || record.format in ("file", "url")) ||
+        return recorded_format(record.format)
     ext = last(split(basename(path), '.'))
     for name in available_formats()
         format = storage_format(Val(name))

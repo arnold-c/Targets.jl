@@ -658,6 +658,8 @@ read_value(::JLD2Format, path) = JLD2.load(path, "value")
 
 **13.3 Behavioral: URL targets.** `format = :url`: the function returns one or more URLs, and the value hash comes from an HTTP `HEAD` request (ETag, else Last-Modified plus Content-Length) using the stdlib Downloads. Like file targets, they are re-checked on every run and consumers receive the URL. When offline, keep the recorded hash and warn instead of failing the run.
 
+*Status (13.3): implemented in `src/urls.jl`. URL targets reuse the file-target record fields (`files` holds the URLs, `file_hashes` the per-URL `HEAD` hashes), and the staleness reason for a changed resource is `:url_changed`. Consumers rebuild when a resource changes, since the URL target's value hash is built from those hashes. A URL that cannot be reached during the build that creates it fails the target; afterwards it keeps its recorded hash, with a warning. Tests use a local HTTP.jl (v2) server.*
+
 - **Tests.** Round-trip and byte-stability per format; changing the format rebuilds with `:format_changed` and `tar_read` reads the new format; a missing extension gives the "load X" error; `tar_read` reads the recorded format after `_targets.jl` changed; `:url` against a local `HTTP.jl` server (test-only dependency).
 
 ### Phase 14: Richer branching patterns

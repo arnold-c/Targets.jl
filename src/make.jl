@@ -111,9 +111,7 @@ function stored_value(s::Store, name::Symbol, kind::Symbol)
 end
 
 "The kind of value a target stores, from its definition (see [`stored_value`](@ref))."
-value_kind(t::Target) = t.format == :file ?
-    :file :
-    t.pattern === nothing ? :object : :branches
+value_kind(t::Target) = is_external(t) ? :file : t.pattern === nothing ? :object : :branches
 
 "The stored value of a finished target during a build: its kind comes from the pipeline."
 retrieve_value(ctx::BuildContext, name::Symbol) = stored_value(
@@ -143,7 +141,7 @@ code_for!(ctx::BuildContext, t::Target) = get!(
 function check_supported(p::Pipeline, names)
     for name in names
         t = get_target(p, name)
-        (t.pattern !== nothing && t.format == :file) &&
+        (t.pattern !== nothing && is_external(t)) &&
             error(
                 "target `$name`: a branching target cannot also be a file target; " *
                     "branch over a file target and write files from a plain target instead",

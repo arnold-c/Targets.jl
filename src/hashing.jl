@@ -37,7 +37,7 @@ end
 # Whether a target stores files or an object. (Recorded as `:jld2` for objects so
 # that hashes from before storage formats existed stay valid; the storage format
 # itself is tracked separately, as `:format_changed`.)
-target_kind(t::Target) = t.format === :file ? :file : :jld2
+target_kind(t::Target) = is_external(t) ? t.format : :jld2
 
 """
     command_hash(t::Target)

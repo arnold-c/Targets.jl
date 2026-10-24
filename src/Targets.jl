@@ -2,6 +2,7 @@ module Targets
 
 using CodeTracking: CodeTracking
 using Dates: Dates
+using Downloads: Downloads
 using Graphs: SimpleDiGraph, add_edge!, inneighbors, nv, outneighbors
 using JLD2: JLD2
 using JuliaSyntax:
@@ -51,6 +52,8 @@ include("codedeps.jl")
 include("manifest.jl")
 
 include("files.jl")
+
+include("urls.jl")
 
 include("outdated.jl")
 

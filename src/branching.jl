@@ -78,7 +78,7 @@ function pattern_elements(ctx::BuildContext, t::Target)
             for (id, h) in zip(record.branches, record.branch_hashes)
         ]
     end
-    hashes = if up.format == :file
+    hashes = if is_external(up)
         record.file_scalar &&
             error(
                 "target `$(up.name)` is the pattern of `$(t.name)`, so it must return a vector of paths",

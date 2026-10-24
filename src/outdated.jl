@@ -11,7 +11,7 @@ the recorded form of the seed it would run with ([`seed_string`](@ref)).
 Reasons, in order: `:forced`, `:always`, `:no_source`, `:missing`, `:errored`,
 `:julia_version_changed`, `:command_changed`, `:seed_changed`, `:format_changed`,
 `:code_changed`, `:deps_changed`,
-`:upstream_changed`, `:file_changed`. File targets are re-checked on every call
+`:upstream_changed`, `:file_changed`, `:url_changed`. File targets are re-checked on every call
 (`root` locates their files). `key` is where the record lives: `t.name`, or
 `"name/id"` for one branch of a branching target (a branching target as a whole
 is outdated if any recorded branch object is missing): a missing file makes them `:missing`, and changed
@@ -32,7 +32,9 @@ function outdated_reason(
     t.cue == :always && return :always
     cmd.hash === nothing && return :no_source
     record = read_meta(store, key)
-    stored = if t.format == :file
+    stored = if t.format == :url
+        record !== nothing
+    elseif t.format == :file
         record !== nothing && files_exist(file_root(root), record)
     elseif t.pattern !== nothing && key == t.name
         # a branching target, not one branch
@@ -41,7 +43,7 @@ function outdated_reason(
         has_object(store, key)
     end
     # objects in a format tied to the Julia version cannot be read after an upgrade
-    if stored && t.format !== :file && version_bound(resolve_format(t.format))
+    if stored && !is_external(t) && version_bound(resolve_format(t.format))
         stored = something(record).julia_version == string(VERSION)
     end
     t.cue == :never && stored && return nothing
@@ -58,7 +60,9 @@ function outdated_reason(
     for d in t.deps
         record.dep_hashes[string(d)] == dep_hashes[d] || return :upstream_changed
     end
-    if t.format == :file
+    if t.format == :url
+        url_state(record).value_hash == record.value_hash || return :url_changed
+    elseif t.format == :file
         file_state(file_root(root), record).value_hash == record.value_hash ||
             return :file_changed
     end

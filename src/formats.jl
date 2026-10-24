@@ -138,14 +138,14 @@ function resolve_format(name::Symbol)
 end
 
 "How target `t`'s format is recorded in its metadata."
-record_format(t) = t.format === :file ?
-    "file" :
+record_format(t) = is_external(t) ?
+    string(t.format) :
     string(format_name(resolve_format(t.format)))
 
 "Record fields describing target `t`'s format: its name, and a hash of its options."
 format_fields(t) = (
     format = record_format(t),
-    format_hash = t.format === :file ? "" : canonical_hash(resolve_format(t.format)),
+    format_hash = is_external(t) ? "" : canonical_hash(resolve_format(t.format)),
 )
 
 """

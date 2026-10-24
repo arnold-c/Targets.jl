@@ -74,7 +74,7 @@ retrieve_value(s::Store, name::Symbol) = stored_value(s, name, stored_kind(s, na
 function stored_kind(s::Store, name::Symbol)
     record = read_meta(s, name)
     record === nothing && return :object
-    record.format == "file" && return :file
+    record.format in ("file", "url") && return :file # paths or URLs, from the record
     # a branching target has a record but no object of its own: its value is its branches
     return has_object(s, name) ? :object : :branches
 end

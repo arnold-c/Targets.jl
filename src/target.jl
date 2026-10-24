@@ -38,7 +38,9 @@ of `f`, which must therefore have exactly one method with positional arguments.
 `format` is how the value is stored: `:jld2` (the default), `:jls`
 (Serialization: fast, but tied to the Julia version), another format name made
 available by a package extension, a [`StorageFormat`](@ref) value carrying
-options, or `:file` for a target that returns paths of files it reads or writes.
+options, `:file` for a target that returns paths of files it reads or writes, or
+`:url` for one that returns URLs whose changes (by HTTP `HEAD`) should rebuild
+its consumers.
 
 `seed` controls the random number generator `f` runs with: `:auto` seeds it
 from the pipeline seed and the target's name (see [`tar_seed`](@ref)), an
@@ -65,7 +67,7 @@ function target(
     deployment::Symbol = :spawn,
 )
     validate_name(name)
-    format === :file || resolve_format(format)
+    format in (:file, :url) || resolve_format(format)
     cue in CUES ||
         throw(ArgumentError("target `$name`: cue must be one of $CUES, got `$cue`"))
     dependencies = deps === nothing ?
