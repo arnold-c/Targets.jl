@@ -23,7 +23,7 @@
 #   julia> tar_make()
 #
 # Other knobs of `write_demo`: note (comment only), data (input file), grid (branching),
-# discount (a helper two calls deep). `walkthrough()` runs a fixed sequence of edits in a
+# discount (a helper two calls deep), shifts (static branching). `walkthrough()` runs a fixed sequence of edits in a
 # temporary directory and checks each step rebuilds exactly what it should:
 #
 #   julia --project=. examples/demo.jl
@@ -41,7 +41,7 @@ demo_store(dir = demo_dir()) = joinpath(dir, "_targets")
 
 """
     write_demo(dir; scale = 3, note = "", data = "1.0 2.0 NaN 4.0", grid = "[0.1, 0.5, 1.0]",
-               discount = "x")
+               discount = "x", shifts = "(1, 2)")
 
 Write the demo project into `dir`. Each keyword changes one thing:
 
@@ -50,6 +50,8 @@ Write the demo project into `dir`. Each keyword changes one thing:
 - `data`: contents of the input file `data/raw.csv`
 - `grid`: the pattern target's elements (branching)
 - `discount`: an expression inside a helper two calls deep from the `scores` target
+- `shifts`: the values that generate one `shifted_<k>` target each (static branching),
+  combined by `shifted_total`
 """
 function write_demo(
     dir::AbstractString = demo_dir();
@@ -58,6 +60,7 @@ function write_demo(
     data = "1.0 2.0 NaN 4.0",
     grid = "[0.1, 0.5, 1.0]",
     discount = "x",
+    shifts = "(1, 2)",
 )
     mkpath(joinpath(dir, "data"))
     write(joinpath(dir, "data", "raw.csv"), data)
@@ -86,7 +89,7 @@ function write_demo(
         using Targets
         Base.include(@__MODULE__, joinpath(@__DIR__, "analysis.jl"))
 
-        @pipeline begin
+        base = @pipeline begin
             @target raw_file = "data/raw.csv"  format = :file
             @target raw      = parse.(Float64, split(read(raw_file, String)))
             @target cleaned  = clean(raw)
@@ -94,6 +97,12 @@ function write_demo(
             @target scores   = score(Params(grid), cleaned)  pattern = grid
             @target report   = summarize(scores)
         end
+
+        # Static branching: plain Julia generates one target per value; one target combines them.
+        static = [target(Symbol(:shifted_, k), cleaned -> sum(cleaned) + k) for k in $shifts]
+        combined = target(:shifted_total, (xs...) -> sum(xs); deps = [t.name for t in static])
+
+        tar_pipeline(base.targets, static, combined)
         """,
     )
     return dir
@@ -160,7 +169,7 @@ reset_demo(dir = demo_dir()) = rm(dir; recursive = true, force = true)
 ## Scripted walkthrough
 
 function check(label, summary, expected_built)
-    ok = summary.built == expected_built
+    ok = sort(summary.built) == sort(expected_built)
     println(ok ? "  ✓ " : "  ✗ ", label, ": built ", summary.built)
     ok || println("      expected ", expected_built)
     return ok
@@ -174,6 +183,7 @@ expected targets were rebuilt. Returns `true` if every step matched.
 """
 function walkthrough(dir = mktempdir())
     everything = [:raw_file, :raw, :cleaned, :grid, :scores, :report]
+    append!(everything, [:shifted_1, :shifted_2, :shifted_total])
     results = Bool[]
     run(label, expected; kw...) = push!(
         results,
@@ -202,9 +212,22 @@ function walkthrough(dir = mktempdir())
         discount = "x + 0",
         scale = 4,
         grid = "[0.1, 0.5, 1.0, 2.0]",
+        shifts = "(1, 3)",
+    )
+    run("static branch value changed", [:shifted_3, :shifted_total])
+
+    write_demo(
+        dir;
+        discount = "x + 0",
+        scale = 4,
+        grid = "[0.1, 0.5, 1.0, 2.0]",
+        shifts = "(1, 3)",
         data = "1.0 2.0 NaN 4.0 8.0",
     )
-    run("input file edited", [:raw_file, :raw, :cleaned, :scores, :report])
+    run(
+        "input file edited",
+        [:raw_file, :raw, :cleaned, :scores, :report, :shifted_1, :shifted_3, :shifted_total],
+    )
 
     touch(joinpath(dir, "data", "raw.csv"))
     run("input file touched, same bytes", Symbol[])
