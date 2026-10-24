@@ -176,22 +176,26 @@ macro tar_workspace(name, options...)
 end
 
 """
-    tar_rerun(p::Pipeline, key; store = default_store_path())
+    tar_rerun(p::Pipeline, key; store = default_store_path(), root = nothing)
 
 Call target `key`'s current function on the arguments saved by its last failure,
 with the same seed, in this session, so the error can be inspected (for example
-with Infiltrator.jl or Debugger.jl). `tar_rerun(key)` loads `_targets.jl`.
+with Infiltrator.jl or Debugger.jl). As in `tar_make`, it runs with the working
+directory set to the project `root` (default: the active project), so relative
+paths mean the same. `tar_rerun(key)` loads `_targets.jl`.
 """
 function tar_rerun(
     p::Pipeline,
     key;
     store::Union{Store, AbstractString} = default_store_path(),
+    root::Union{Nothing, AbstractString} = nothing,
 )
     ws = load_workspace(as_store(store), key)
     t = get_target(p, Symbol(first(split(string(key), '/'))))
     isempty(ws["unsaved"]) ||
         @warn "these arguments could not be saved and are passed as `nothing`" ws["unsaved"]
-    return call_target(t.f, collect(Any, values(ws["args"])), ws["seed"])
+    args = collect(Any, values(ws["args"]))
+    return cd(() -> call_target(t.f, args, ws["seed"]), something(root, project_root()))
 end
 tar_rerun(key; script::AbstractString = default_script(), kwargs...) = tar_rerun(
     load_pipeline(script),
