@@ -50,6 +50,7 @@ struct BuildContext
     values::Dict{Symbol, Any}
     value_hashes::Dict{Symbol, String}
     remaining::Dict{Symbol, Int}
+    branching::Dict{Symbol, BranchProgress}
     summary::BuildSummary
     observe::Function
 end
@@ -85,6 +86,7 @@ function BuildContext(
         Dict{Symbol, Any}(),
         Dict{Symbol, String}(),
         consumer_counts(p, selected),
+        Dict{Symbol, BranchProgress}(),
         BuildSummary(),
         observe,
     )
@@ -244,7 +246,10 @@ function tar_make(
     cd(rootdir) do
         drain!(ReadyQueue(p, selected)) do name
             t = get_target(p, name)
-            process!(ctx, t; keep_going)
+            for job in plan!(ctx, t)
+                log_start!(ctx, job)
+                commit!(ctx, execute(job); keep_going)
+            end
             release!(ctx, t)
             ctx.observe(ctx)
         end
@@ -366,25 +371,33 @@ function tar_make_fresh(
     end
 end
 
-function process!(ctx::BuildContext, t::Target; keep_going::Bool)
+"""
+    plan!(ctx, t) -> Vector{Job}
+
+Decide what target `t` needs: nothing if an upstream failed or it is up to date
+(both recorded right away), else the jobs to execute. A branching target may
+need several jobs, or none.
+"""
+function plan!(ctx::BuildContext, t::Target)
     sm = ctx.summary
     upstream_failed = filter(d -> d in sm.errored || d in sm.blocked, t.deps)
     if !isempty(upstream_failed)
         push!(sm.blocked, t.name)
         log!(ctx, "⊘ $(t.name) skipped: upstream $(join(upstream_failed, ", ")) failed")
-        return nothing
+        return Job[]
     end
     cmd = command_for!(ctx, t)
     code = code_for!(ctx, t)
-    t.pattern === nothing || return process_branching!(ctx, t, cmd, code; keep_going)
+    t.pattern === nothing || return plan_branching!(ctx, t, cmd, code)
     dep_hashes = Dict{Symbol, String}(d => ctx.value_hashes[d] for d in t.deps)
+    seed = resolve_seed(ctx.pipeline, t)
     reason = outdated_reason(
         ctx.store,
         t,
         cmd,
         code,
         dep_hashes;
-        seed = seed_string(resolve_seed(ctx.pipeline, t)),
+        seed = seed_string(seed),
         forced = t.name in ctx.forced,
         root = ctx.root,
     )
@@ -392,94 +405,66 @@ function process!(ctx::BuildContext, t::Target; keep_going::Bool)
         ctx.value_hashes[t.name] = stored_value_hash(ctx.store, t.name)
         push!(sm.skipped, t.name)
         log!(ctx, "· $(t.name) up to date")
-    else
-        build!(ctx, t, cmd, code, dep_hashes, reason; keep_going)
+        return Job[]
     end
-    return nothing
+    args, load_error = resolve_args(() -> Any[get_value!(ctx, d) for d in t.deps])
+    return [Job(
+        t,
+        string(t.name),
+        0,
+        args,
+        load_error,
+        seed,
+        reason,
+        cmd,
+        code,
+        dep_hashes,
+        pattern_use_of(ctx.pipeline, t.name),
+        ctx.store,
+        ctx.root,
+    )]
 end
 
-# Persist what a target returned. Returns the value its consumers receive, its
-# value hash, and any extra record fields (a file target keeps no object).
-function commit_value!(ctx::BuildContext, t::Target, value)
-    if t.format == :file
-        paths, scalar = normalize_file_value(t, value, ctx.root)
-        state = file_state(ctx.root, paths)
-        stored = (;
-            files = paths,
-            file_scalar = scalar,
-            file_signatures = state.signatures,
-            file_hashes = state.hashes,
-        )
-        pattern_use = pattern_use_of(ctx.pipeline, t.name)
-        (pattern_use === nothing || !scalar) ||
-            error(
-                "target `$(t.name)` is the pattern of `$pattern_use`, so it must return a vector of paths",
-            )
-        return (scalar ? first(paths) : paths), state.value_hash, stored
-    end
-    path = write_object(ctx.store, t.name, value)
-    stored = (;)
-    pattern_use = pattern_use_of(ctx.pipeline, t.name)
-    if pattern_use !== nothing && t.pattern === nothing
-        value isa AbstractVector ||
-            error(
-                "target `$(t.name)` is the pattern of `$pattern_use`, so it must return a vector, " *
-                    "not a `$(typeof(value))`",
-            )
-        stored = (; element_hashes = element_hashes(value), elements_recorded = true)
-    end
-    return value, object_hash(value, path), stored
-end
-
-function build!(
-    ctx::BuildContext,
-    t::Target,
-    cmd,
-    code,
-    dep_hashes,
-    reason;
-    keep_going::Bool,
-)
-    log!(ctx, "▶ $(t.name) ($reason)")
-    started = time_ns()
+# Load a job's arguments; a failure becomes the job's error rather than ending the run.
+function resolve_args(load)
     try
-        args = Any[get_value!(ctx, d) for d in t.deps]
-        seed = resolve_seed(ctx.pipeline, t)
-        value = call_target(t.f, args, seed)
-        seconds = (time_ns() - started) / 1.0e9
-        consumer_value, vhash, stored = commit_value!(ctx, t, value)
-        write_meta(
-            ctx.store,
-            t.name,
-            Record(;
-                command_hash = something(cmd.hash, ""),
-                code_hash = code,
-                hash_source = string(cmd.kind),
-                dep_hashes = Dict{String, String}(string(d) => h for (d, h) in dep_hashes),
-                value_hash = vhash,
-                format = string(t.format),
-                built_at = string(Dates.now(Dates.UTC)),
-                seconds,
-                seed = seed_string(seed),
-                stored...,
-            ),
-        )
-        ctx.remaining[t.name] > 0 && (ctx.values[t.name] = consumer_value)
-        ctx.value_hashes[t.name] = vhash
-        push!(ctx.summary.built, t.name)
-        log!(ctx, "✔ $(t.name) $(round(seconds; digits = 2))s")
+        return load(), nothing
     catch e
         e isa InterruptException && rethrow()
-        record_failure!(ctx, t, cmd, e)
-        push!(ctx.summary.errored, t.name)
-        log!(ctx, "✖ $(t.name): $(first(sprint(showerror, e), 200))")
-        keep_going || rethrow()
+        return Any[], e
     end
-    return nothing
 end
 
+"""
+    commit!(ctx, result; keep_going) -> Bool
+
+Record a job's outcome. Returns whether its target is now finished (a
+branching target finishes with its last branch). Without `keep_going`, a
+failure is rethrown after it is recorded.
+"""
+function commit!(ctx::BuildContext, r::JobResult; keep_going::Bool)
+    job = r.job
+    job.branch > 0 && return commit_branch!(ctx, r; keep_going)
+    t = job.target
+    if failed(r)
+        record_failure!(ctx, t, r.exception)
+        push!(ctx.summary.errored, t.name)
+        log!(ctx, "✖ $(t.name): $(first(sprint(showerror, r.exception), 200))")
+        keep_going || throw(r.exception)
+        return true
+    end
+    write_meta(ctx.store, t.name, job_record(r))
+    ctx.remaining[t.name] > 0 && (ctx.values[t.name] = r.value)
+    ctx.value_hashes[t.name] = r.value_hash
+    push!(ctx.summary.built, t.name)
+    log!(ctx, "✔ $(t.name) $(round(r.seconds; digits = 2))s")
+    return true
+end
+
+log_start!(ctx::BuildContext, job::Job) = log!(ctx, "▶ $(job.key) ($(job.reason))")
+
 # Record the failure but leave the last good object in place.
-function record_failure!(ctx::BuildContext, t::Target, cmd, e; key = t.name)
+function record_failure!(ctx::BuildContext, t::Target, e; key = t.name)
     previous = something(read_meta(ctx.store, key), Record(; format = string(t.format)))
     message = first(sprint(showerror, e), 2000)
     write_meta(ctx.store, key, update(previous; error = message))

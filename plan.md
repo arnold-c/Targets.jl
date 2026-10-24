@@ -563,6 +563,8 @@ Tasks are the right default on a laptop or a single node, and cheapest for many 
 
 With `jobs = 1`, execute runs inline in the scheduler task; the logs and summaries must be byte-identical to today's.
 
+*Status: implemented. `plan!`/`plan_branching!` (make.jl, branching.jl) return `Job`s, `execute` and `persist_value` live in `src/jobs.jl`, and `commit!`/`commit_branch!`/`finish_branching!` record outcomes; a branching target's progress is a `BranchProgress` in `BuildContext.branching`. Decision: arguments are resolved from the value cache (loading on a miss) during planning, not inside `execute`, so the cache is still filled and released by the scheduler task alone; a load failure is carried in the job (`load_error`) and reported as that target's error.*
+
 **11.3 Behavioral: concurrent jobs.** No fixed pool of worker tasks. The scheduler loop is:
 
 ```julia

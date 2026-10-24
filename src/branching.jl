@@ -56,11 +56,6 @@ function pattern_target(ctx::BuildContext, t::Target)
     return get_target(ctx.pipeline, t.pattern)
 end
 
-struct PatternElement
-    id::String
-    hash::String
-end
-
 # Identity hashes of a file target's paths: the path together with its content hash.
 file_element_hashes(record::Record) = disambiguate(
     String[canonical_hash((f, h)) for (f, h) in zip(record.files, record.file_hashes)]
@@ -138,58 +133,125 @@ function branch_dep_hashes(ctx::BuildContext, t::Target, el::PatternElement)
     )
 end
 
-function process_branching!(ctx::BuildContext, t::Target, cmd, code; keep_going::Bool)
+"""
+    plan_branching!(ctx, t, cmd, code) -> Vector{Job}
+
+One job per outdated branch of branching target `t`. Up-to-date branches
+contribute their stored value hashes; the target is finished (see
+[`finish_branching!`](@ref)) once its last job is committed, or right away if
+there is none.
+"""
+function plan_branching!(ctx::BuildContext, t::Target, cmd, code)
     elements = pattern_elements(ctx, t)
-    ids = [el.id for el in elements]
+    progress = BranchProgress(
+        t,
+        cmd,
+        code,
+        elements,
+        fill("", length(elements)),
+        Int[],
+        read_meta(ctx.store, t.name),
+        0,
+        nothing,
+    )
     forced = t.name in ctx.forced
-    previous = read_meta(ctx.store, t.name)
-    built = String[]
-    hashes = String[]
-    failure = nothing
+    jobs = Job[]
     for (i, el) in enumerate(elements)
         key = "$(t.name)/$(el.id)"
         dep_hashes = branch_dep_hashes(ctx, t, el)
+        seed = resolve_seed(ctx.pipeline, t, key)
         reason = outdated_reason(
             ctx.store,
             t,
             cmd,
             code,
             dep_hashes;
-            seed = seed_string(resolve_seed(ctx.pipeline, t, key)),
+            seed = seed_string(seed),
             forced,
             root = ctx.root,
             key,
         )
         if reason === nothing
-            push!(hashes, stored_value_hash(ctx.store, key))
+            progress.hashes[i] = stored_value_hash(ctx.store, key)
             continue
         end
-        try
-            push!(hashes, build_branch!(ctx, t, cmd, code, i, el, dep_hashes, key, reason))
-            push!(built, el.id)
-        catch e
-            e isa InterruptException && rethrow()
-            record_failure!(ctx, t, cmd, e; key)
-            failure === nothing && (failure = e)
-            log!(ctx, "✖ $key: $(first(sprint(showerror, e), 200))")
-            keep_going || (push!(ctx.summary.errored, t.name); rethrow())
+        args, load_error = resolve_args() do
+            element = pattern_element_value(ctx, t, i, el)
+            Any[d == t.pattern ? element : get_value!(ctx, d) for d in t.deps]
         end
+        push!(
+            jobs,
+            Job(
+                t,
+                key,
+                i,
+                args,
+                load_error,
+                seed,
+                reason,
+                cmd,
+                code,
+                dep_hashes,
+                nothing,
+                ctx.store,
+                ctx.root,
+            ),
+        )
     end
+    progress.pending = length(jobs)
+    ctx.branching[t.name] = progress
+    isempty(jobs) && finish_branching!(ctx, progress)
+    return jobs
+end
+
+"Record one branch's outcome; returns whether its target is now finished."
+function commit_branch!(ctx::BuildContext, r::JobResult; keep_going::Bool)
+    job = r.job
+    t = job.target
+    progress = ctx.branching[t.name]
+    progress.pending -= 1
+    if failed(r)
+        record_failure!(ctx, t, r.exception; key = job.key)
+        progress.failure === nothing && (progress.failure = r.exception)
+        log!(ctx, "✖ $(job.key): $(first(sprint(showerror, r.exception), 200))")
+        if !keep_going
+            push!(ctx.summary.errored, t.name)
+            delete!(ctx.branching, t.name)
+            throw(r.exception)
+        end
+    else
+        write_meta(ctx.store, job.key, job_record(r))
+        progress.hashes[job.branch] = r.value_hash
+        push!(progress.built, job.branch)
+        log!(ctx, "✔ $(job.key) $(round(r.seconds; digits = 2))s")
+    end
+    progress.pending > 0 && return false
+    finish_branching!(ctx, progress)
+    return true
+end
+
+"Commit a branching target as a whole once all its branches are done."
+function finish_branching!(ctx::BuildContext, progress::BranchProgress)
+    t = progress.target
+    delete!(ctx.branching, t.name)
+    ids = [el.id for el in progress.elements]
+    built = [ids[i] for i in sort(progress.built)]
     isempty(built) || (ctx.summary.branches[t.name] = built)
-    if failure !== nothing
+    if progress.failure !== nothing
         push!(ctx.summary.errored, t.name)
-        record_failure!(ctx, t, cmd, failure)
+        record_failure!(ctx, t, progress.failure)
         return nothing
     end
+    hashes = progress.hashes
     value_hash = combined_hash(hashes)
     deps = Dict{String, String}(string(d) => ctx.value_hashes[d] for d in t.deps)
     write_meta(
         ctx.store,
         t.name,
         Record(;
-            command_hash = something(cmd.hash, ""),
-            code_hash = code,
-            hash_source = string(cmd.kind),
+            command_hash = something(progress.cmd.hash, ""),
+            code_hash = progress.code,
+            hash_source = string(progress.cmd.kind),
             dep_hashes = deps,
             value_hash,
             format = string(t.format),
@@ -201,6 +263,7 @@ function process_branching!(ctx::BuildContext, t::Target, cmd, code; keep_going:
     )
     prune_branches!(ctx.store, t.name, ids)
     ctx.value_hashes[t.name] = value_hash
+    previous = progress.previous
     changed = !isempty(built) ||
         previous === nothing ||
         previous.branches != ids ||
@@ -214,45 +277,6 @@ function process_branching!(ctx::BuildContext, t::Target, cmd, code; keep_going:
         log!(ctx, "· $(t.name): $(length(ids)) branches up to date")
     end
     return nothing
-end
-
-function build_branch!(
-    ctx::BuildContext,
-    t::Target,
-    cmd,
-    code,
-    i,
-    el,
-    dep_hashes,
-    key,
-    reason,
-)
-    log!(ctx, "▶ $key ($reason)")
-    started = time_ns()
-    element = pattern_element_value(ctx, t, i, el)
-    args = Any[d == t.pattern ? element : get_value!(ctx, d) for d in t.deps]
-    seed = resolve_seed(ctx.pipeline, t, key)
-    value = call_target(t.f, args, seed)
-    seconds = (time_ns() - started) / 1.0e9
-    path = write_object(ctx.store, key, value)
-    vhash = object_hash(value, path)
-    write_meta(
-        ctx.store,
-        key,
-        Record(;
-            command_hash = something(cmd.hash, ""),
-            code_hash = code,
-            hash_source = string(cmd.kind),
-            dep_hashes = Dict{String, String}(string(d) => h for (d, h) in dep_hashes),
-            value_hash = vhash,
-            format = string(t.format),
-            built_at = string(Dates.now(Dates.UTC)),
-            seconds,
-            seed = seed_string(seed),
-        ),
-    )
-    log!(ctx, "✔ $key $(round(seconds; digits = 2))s")
-    return vhash
 end
 
 @testmodule BranchFixtures begin

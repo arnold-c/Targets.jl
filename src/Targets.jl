@@ -53,6 +53,8 @@ include("outdated.jl")
 
 include("scheduler.jl")
 
+include("jobs.jl")
+
 include("make.jl")
 export tar_make, tar_outdated, BuildSummary
 
