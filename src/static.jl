@@ -99,6 +99,7 @@ function suffix_branch(ts::Vector{Target}, suffix::AbstractString)
             rename(t.pattern),
             t.cue,
             t.source,
+            t.name,
         )
         for t in ts
     ]
