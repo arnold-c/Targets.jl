@@ -9,7 +9,8 @@ that applies wins, so the reason is meaningful in logs and in `tar_outdated()`.
 the recorded form of the seed it would run with ([`seed_string`](@ref)).
 
 Reasons, in order: `:forced`, `:always`, `:no_source`, `:missing`, `:errored`,
-`:julia_version_changed`, `:command_changed`, `:seed_changed`, `:code_changed`, `:deps_changed`,
+`:julia_version_changed`, `:command_changed`, `:seed_changed`, `:format_changed`,
+`:code_changed`, `:deps_changed`,
 `:upstream_changed`, `:file_changed`. File targets are re-checked on every call
 (`root` locates their files). `key` is where the record lives: `t.name`, or
 `"name/id"` for one branch of a branching target (a branching target as a whole
@@ -39,6 +40,10 @@ function outdated_reason(
     else
         has_object(store, key)
     end
+    # objects in a format tied to the Julia version cannot be read after an upgrade
+    if stored && t.format !== :file && version_bound(resolve_format(t.format))
+        stored = something(record).julia_version == string(VERSION)
+    end
     t.cue == :never && stored && return nothing
     (record === nothing || !stored) && return :missing
     isempty(record.error) || return :errored
@@ -47,6 +52,7 @@ function outdated_reason(
         return :julia_version_changed
     record.command_hash == cmd.hash || return :command_changed
     record.seed == seed || return :seed_changed
+    same_format(record, t) || return :format_changed
     record.code_hash == code || return :code_changed
     Set(keys(record.dep_hashes)) == Set(string.(t.deps)) || return :deps_changed
     for d in t.deps

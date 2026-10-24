@@ -174,8 +174,7 @@ function read_object(s::Store, key)
         e isa InterruptException && rethrow()
         error(
             "could not load the stored object for `$key`: $(sprint(showerror, e))\n" *
-                "If its type is defined in `_targets.jl`, move the type into a named module " *
-                "(for example your project package) and load it with `using`.",
+                load_hint(format),
         )
     end
 end
@@ -212,6 +211,8 @@ Base.@kwdef struct Record
     seconds::Float64 = 0.0
     error::String = ""
     julia_version::String = string(VERSION)
+    # A hash of the storage format and its options (see formats.jl).
+    format_hash::String = ""
     # The seed the target ran with (see seeds.jl), empty if it was not seeded.
     seed::String = ""
     # File targets keep no object: the paths they returned, whether it was a single

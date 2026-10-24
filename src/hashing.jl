@@ -34,6 +34,11 @@ function closure_captures(f)
     )
 end
 
+# Whether a target stores files or an object. (Recorded as `:jld2` for objects so
+# that hashes from before storage formats existed stay valid; the storage format
+# itself is tracked separately, as `:format_changed`.)
+target_kind(t::Target) = t.format === :file ? :file : :jld2
+
 """
     command_hash(t::Target)
 
@@ -47,7 +52,7 @@ function command_hash(t::Target)
         CommandHash(canonical_hash(t.source), :source)
     own.hash === nothing && return own
     return CommandHash(
-        canonical_hash((own.hash, closure_captures(t.f), t.format, t.pattern)),
+        canonical_hash((own.hash, closure_captures(t.f), target_kind(t), t.pattern)),
         own.kind,
     )
 end

@@ -12,7 +12,7 @@ struct Target
     name::Symbol
     f::Any
     deps::Vector{Symbol}
-    format::Symbol
+    format::Union{Symbol, StorageFormat}
     pattern::Union{Nothing, Symbol}
     cue::Symbol
     source::Union{Nothing, Expr}
@@ -35,6 +35,11 @@ with_fields(t::Target; changes...) = Target((
 Declare a target. Unless `deps` is given, dependencies are the argument names
 of `f`, which must therefore have exactly one method with positional arguments.
 
+`format` is how the value is stored: `:jld2` (the default), `:jls`
+(Serialization: fast, but tied to the Julia version), another format name made
+available by a package extension, a [`StorageFormat`](@ref) value carrying
+options, or `:file` for a target that returns paths of files it reads or writes.
+
 `seed` controls the random number generator `f` runs with: `:auto` seeds it
 from the pipeline seed and the target's name (see [`tar_seed`](@ref)), an
 integer pins the seed, and `nothing` leaves the session's generator alone.
@@ -51,7 +56,7 @@ function target(
     name::Symbol,
     f;
     deps::Union{Nothing, AbstractVector{Symbol}} = nothing,
-    format::Symbol = :jld2,
+    format::Union{Symbol, StorageFormat} = :jld2,
     pattern::Union{Nothing, Symbol} = nothing,
     cue::Symbol = :thorough,
     source::Union{Nothing, Expr} = nothing,

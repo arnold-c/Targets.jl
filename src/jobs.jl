@@ -158,7 +158,7 @@ function job_record(r::JobResult)
         hash_source = string(job.cmd.kind),
         dep_hashes = Dict{String, String}(string(d) => h for (d, h) in job.dep_hashes),
         value_hash = r.value_hash,
-        format = record_format(job.target),
+        format_fields(job.target)...,
         built_at = string(Dates.now(Dates.UTC)),
         r.seconds,
         seed = seed_string(job.seed),

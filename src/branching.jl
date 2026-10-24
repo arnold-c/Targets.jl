@@ -258,7 +258,7 @@ function finish_branching!(ctx::BuildContext, progress::BranchProgress)
             hash_source = string(progress.cmd.kind),
             dep_hashes = deps,
             value_hash,
-            format = record_format(t),
+            format_fields(t)...,
             built_at = string(Dates.now(Dates.UTC)),
             seed = seed_string(resolve_seed(ctx.pipeline, t)),
             branches = ids,

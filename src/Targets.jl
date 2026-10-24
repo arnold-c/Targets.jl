@@ -22,6 +22,9 @@ using TestItems: @testitem, @testmodule
 
 include("testing.jl")
 
+include("formats.jl")
+export StorageFormat
+
 include("target.jl")
 export Target, target
 
@@ -39,9 +42,6 @@ include("hashing.jl")
 
 include("seeds.jl")
 export tar_seed
-
-include("formats.jl")
-export StorageFormat
 
 include("store.jl")
 export tar_meta

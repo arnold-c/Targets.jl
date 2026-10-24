@@ -35,6 +35,34 @@ extension(::JLD2Format) = "jld2"
 write_value(::JLD2Format, path::AbstractString, value) = JLD2.jldsave(path; value)
 read_value(::JLD2Format, path::AbstractString) = JLD2.load(path, "value")
 
+"""
+    JLSFormat()
+
+Julia's Serialization: the fastest for arbitrary values, but a file can only be
+read by the Julia version that wrote it, so these targets rebuild after a Julia
+upgrade.
+"""
+struct JLSFormat <: StorageFormat end
+storage_format(::Val{:jls}) = JLSFormat()
+format_name(::JLSFormat) = :jls
+extension(::JLSFormat) = "jls"
+write_value(::JLSFormat, path::AbstractString, value) = Serialization.serialize(path, value)
+read_value(::JLSFormat, path::AbstractString) = Serialization.deserialize(path)
+
+"Whether objects in `format` can only be read by the Julia version that wrote them."
+version_bound(::StorageFormat) = false
+version_bound(::JLSFormat) = true
+
+"What to suggest when an object in `format` fails to load."
+load_hint(
+    ::StorageFormat,
+) = "If its type is defined in `_targets.jl`, move the type into a named module " *
+    "(for example your project package) and load it with `using`."
+load_hint(
+    ::JLSFormat,
+) = "Serialization files can only be read by the Julia version that wrote them; " *
+    "rebuild the target with tar_make()."
+
 const DEFAULT_FORMAT = JLD2Format()
 
 # Packages that provide the formats Targets knows about but does not load itself.
@@ -69,6 +97,24 @@ record_format(t) = t.format === :file ?
     "file" :
     string(format_name(resolve_format(t.format)))
 
+"Record fields describing target `t`'s format: its name, and a hash of its options."
+format_fields(t) = (
+    format = record_format(t),
+    format_hash = t.format === :file ? "" : canonical_hash(resolve_format(t.format)),
+)
+
+"""
+    same_format(record, t)
+
+Whether `record` was written in target `t`'s current format (including options).
+Records from before format options were tracked compare by name only.
+"""
+function same_format(record, t)
+    current = format_fields(t)
+    isempty(record.format_hash) && return record.format == current.format
+    return record.format_hash == current.format_hash
+end
+
 "The format recorded under `name` in a target's metadata."
 recorded_format(name::AbstractString) = resolve_format(Symbol(name))
 
@@ -78,4 +124,54 @@ recorded_format(name::AbstractString) = resolve_format(Symbol(name))
     @test resolve_format(JLD2Format()) === JLD2Format()
     @test :jld2 in available_formats()
     @test_throws "available formats" resolve_format(:nope)
+end
+
+@testitem "the jls format round-trips, and is rebuilt on another Julia version" begin
+    using Targets: open_store, read_meta, write_meta, update
+    p = tar_pipeline(
+        target(:x, () -> Dict(:a => [1, 2])),
+        target(:y, x -> length(x); format = :jls),
+    )
+    mktempdir() do dir
+        store = joinpath(dir, "_targets")
+        build() = tar_make(p; store, root = dir, io = devnull)
+        @test build().built == [:x, :y]
+        @test isfile(joinpath(store, "objects", "y.jls"))
+        @test tar_read(:y; store) == 1
+        s = open_store(store)
+        write_meta(s, :y, update(read_meta(s, :y); julia_version = "1.0.0"))
+        @test tar_outdated(p; store, root = dir) == [(name = :y, reason = :missing)]
+        @test build().built == [:y]
+    end
+end
+
+@testitem "changing a target's format rebuilds it and reads the new format" begin
+    using Targets: StorageFormat, JLD2Format
+    struct Tagged <: StorageFormat
+        tag::Int
+    end
+    Targets.format_name(::Tagged) = :tagged
+    Targets.extension(::Tagged) = "tagged"
+    Targets.write_value(::Tagged, path, value) = Targets.write_value(
+        JLD2Format(),
+        path,
+        value,
+    )
+    Targets.read_value(::Tagged, path) = Targets.read_value(JLD2Format(), path)
+    Targets.storage_format(::Val{:tagged}) = Tagged(0)
+    mktempdir() do dir
+        store = joinpath(dir, "_targets")
+        p(format) = tar_pipeline(target(:x, () -> [1, 2]), target(:y, x -> sum(x); format))
+        build(format) = tar_make(p(format); store, root = dir, io = devnull)
+        @test build(:jld2).built == [:x, :y]
+        @test tar_outdated(p(:jls); store, root = dir) ==
+            [(name = :y, reason = :format_changed)]
+        @test build(:jls).built == [:y]
+        @test tar_read(:y; store) == 3
+        @test readdir(joinpath(store, "objects")) == ["x.jld2", "y.jls"]
+        @test build(Tagged(1)).built == [:y]
+        @test build(Tagged(1)).built == []
+        @test build(Tagged(2)).built == [:y] # options count
+        @test tar_read(:y; store) == 3
+    end
 end
