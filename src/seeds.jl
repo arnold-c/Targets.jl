@@ -1,9 +1,11 @@
 ## Reproducible per-target random number seeds
 ##
-## Every target (and every branch) runs in its own task whose RNG is seeded from
-## the pipeline seed and the target's key, so its result does not depend on build
-## order, subset builds or scheduling. The default RNG is task-local, so seeding
-## the child task leaves the caller's session RNG untouched.
+## Every target (and every branch) runs with the default RNG seeded from the
+## pipeline seed and the target's key, so its result does not depend on build
+## order, subset builds or scheduling. The default RNG is task-local: the calling
+## task's state is saved before seeding and restored afterwards, so the session's
+## random stream is untouched and concurrent jobs (each in its own task) do not
+## interfere.
 
 const CURRENT_SEED = ScopedValue{Union{Nothing, UInt64}}(nothing)
 
@@ -50,21 +52,18 @@ end
 """
     call_target(f, args, seed)
 
-Call `f(args...)` in the latest world. With a seed, the call runs in its own task
-whose default RNG is seeded first; exceptions are rethrown unwrapped.
+Call `f(args...)` in the latest world, in the current task. With a seed, the
+task's default RNG is seeded first and restored afterwards.
 """
 function call_target(f, args, seed::Union{Nothing, UInt64})
     seed === nothing && return Base.invokelatest(f, args...)
-    task = Task() do
-        Random.seed!(seed)
-        with(() -> Base.invokelatest(f, args...), CURRENT_SEED => seed)
-    end
-    schedule(task)
+    rng = Random.default_rng()
+    saved = copy(rng)
+    Random.seed!(seed)
     try
-        return fetch(task)
-    catch e
-        e isa TaskFailedException || rethrow()
-        throw(task.exception)
+        return with(() -> Base.invokelatest(f, args...), CURRENT_SEED => seed)
+    finally
+        copy!(rng, saved)
     end
 end
 
