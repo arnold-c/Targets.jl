@@ -18,18 +18,27 @@ TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 TestItems = "1c621080-faea-4a02-84b6-bbd5e436b8fe"
 
 [weakdeps]
+Arrow = "69666777-d1a9-59fb-9406-91d4454c9d45"
+CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
+Parquet2 = "98572fba-bba0-415d-956f-fa77e587d26d"
 
 [extensions]
+TargetsArrowExt = "Arrow"
+TargetsCSVExt = "CSV"
 TargetsMakieExt = "Makie"
+TargetsParquet2Ext = "Parquet2"
 
 [compat]
+Arrow = "2"
+CSV = "0.10, 1"
 CodeTracking = "3.0.2"
 Dates = "1"
 Graphs = "1.15.0"
 JLD2 = "0.6.7"
 JuliaSyntax = "1.0.2"
 Makie = "0.24"
+Parquet2 = "0.2"
 Preferences = "1"
 Random = "1"
 SHA = "0.7, 1"

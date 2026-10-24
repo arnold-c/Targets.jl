@@ -189,7 +189,7 @@ end
     using Targets: target
     @test_throws "valid target name" target(Symbol("not valid"), () -> 1)
     @test_throws "valid target name" target(:x, a -> 1; deps = [Symbol("bad dep")])
-    @test_throws ArgumentError target(:x, () -> 1; format = :csv)
+    @test_throws ArgumentError target(:x, () -> 1; format = :no_such_format)
     @test_throws ArgumentError target(:x, () -> 1; cue = :sometimes)
     @test_throws "seed must be" target(:x, () -> 1; seed = :random)
     @test target(:x, () -> 1; seed = 3).seed == 3

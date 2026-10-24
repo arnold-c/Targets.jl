@@ -23,7 +23,7 @@ using TestItems: @testitem, @testmodule
 include("testing.jl")
 
 include("formats.jl")
-export StorageFormat
+export StorageFormat, ArrowFormat, ParquetFormat, CSVFormat
 
 include("target.jl")
 export Target, target

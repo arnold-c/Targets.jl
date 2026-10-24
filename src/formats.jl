@@ -65,8 +65,47 @@ load_hint(
 
 const DEFAULT_FORMAT = JLD2Format()
 
+## Formats implemented in package extensions. The types live here so that users
+## can write `format = ArrowFormat(compress = :zstd)`; reading and writing are
+## defined once the package is loaded.
+
+"""
+    ArrowFormat(; compress = nothing)
+
+Arrow IPC files, for any Tables.jl table; `compress` may be `:lz4` or `:zstd`.
+Needs `using Arrow`. Reading returns a memory-mapped `Arrow.Table`; use
+`DataFrame(tar_read(:x))` or `copy` for a mutable table.
+"""
+Base.@kwdef struct ArrowFormat <: StorageFormat
+    compress::Union{Nothing, Symbol} = nothing
+end
+format_name(::ArrowFormat) = :arrow
+extension(::ArrowFormat) = "arrow"
+
+"""
+    ParquetFormat()
+
+Parquet files, for any Tables.jl table. Needs `using Parquet2`. Reading returns
+a `Parquet2.Dataset`; use `DataFrame(tar_read(:x))` for a table.
+"""
+struct ParquetFormat <: StorageFormat end
+format_name(::ParquetFormat) = :parquet
+extension(::ParquetFormat) = "parquet"
+
+"""
+    CSVFormat(; delim = ',')
+
+CSV text, for any Tables.jl table; mainly for interchange (Arrow is faster).
+Needs `using CSV`. Reading returns a `CSV.File` (the delimiter is detected).
+"""
+Base.@kwdef struct CSVFormat <: StorageFormat
+    delim::Char = ','
+end
+format_name(::CSVFormat) = :csv
+extension(::CSVFormat) = "csv"
+
 # Packages that provide the formats Targets knows about but does not load itself.
-const FORMAT_PACKAGES = Dict{Symbol, String}()
+const FORMAT_PACKAGES = Dict(:arrow => "Arrow", :parquet => "Parquet2", :csv => "CSV")
 
 has_storage_format(name::Symbol) = hasmethod(storage_format, Tuple{Val{name}})
 
@@ -83,7 +122,13 @@ available_formats() = sort!([
 The `StorageFormat` for a target's `format` option (a name or a format value),
 with an error naming the formats available, or the package to load.
 """
-resolve_format(format::StorageFormat) = format
+function resolve_format(format::StorageFormat)
+    hasmethod(write_value, Tuple{typeof(format), String, Any}) && return format
+    name = format_name(format)
+    throw(ArgumentError(
+        "storage format `:$name` needs `using $(get(FORMAT_PACKAGES, name, "the package that defines it"))`",
+    ))
+end
 function resolve_format(name::Symbol)
     has_storage_format(name) && return storage_format(Val(name))
     hint = haskey(FORMAT_PACKAGES, name) ?
@@ -119,11 +164,64 @@ end
 recorded_format(name::AbstractString) = resolve_format(Symbol(name))
 
 @testitem "formats resolve by name, with helpful errors" begin
-    using Targets: resolve_format, JLD2Format, available_formats
+    using Targets: resolve_format, JLD2Format, available_formats, ParquetFormat
     @test resolve_format(:jld2) === JLD2Format()
     @test resolve_format(JLD2Format()) === JLD2Format()
     @test :jld2 in available_formats()
     @test_throws "available formats" resolve_format(:nope)
+    if Base.get_extension(Targets, :TargetsParquet2Ext) === nothing
+        @test_throws "needs `using Parquet2`" resolve_format(:parquet)
+        @test_throws "needs `using Parquet2`" resolve_format(ParquetFormat())
+    end
+end
+
+@testitem "table formats round-trip and write identical bytes for identical tables" begin
+    using Arrow, CSV, Parquet2, DataFrames
+    using Targets:
+        open_store,
+        write_object,
+        read_object,
+        hash_file,
+        ArrowFormat,
+        ParquetFormat,
+        CSVFormat
+    df = DataFrame(a = [1, 2, 3], b = ["x", "y", "z"])
+    formats = (
+        ArrowFormat(),
+        ArrowFormat(compress = :zstd),
+        ParquetFormat(),
+        CSVFormat(),
+        CSVFormat(delim = ';'),
+    )
+    mktempdir() do dir
+        s = open_store(joinpath(dir, "_targets"))
+        for (i, format) in enumerate(formats)
+            first_path = write_object(s, "first$i", df; format)
+            sleep(1.1) # a writer that embeds a timestamp would now differ
+            second_path = write_object(s, "second$i", df; format)
+            @test hash_file(first_path) == hash_file(second_path)
+            @test DataFrame(read_object(s, "first$i")) == df
+        end
+    end
+end
+
+@testitem "a target stored as a table format builds, reads and stays up to date" begin
+    using Arrow, CSV, Parquet2, DataFrames
+    for format in (:arrow, :parquet, :csv)
+        p = tar_pipeline(
+            target(:tbl, () -> DataFrame(a = 1:3, b = [0.5, 1.5, 2.5]); format),
+            target(:total, tbl -> sum(DataFrame(tbl).a)),
+        )
+        mktempdir() do dir
+            store = joinpath(dir, "_targets")
+            build() = tar_make(p; store, root = dir, io = devnull)
+            @test build().built == [:tbl, :total]
+            @test DataFrame(tar_read(:tbl; store)) ==
+                DataFrame(a = 1:3, b = [0.5, 1.5, 2.5])
+            @test tar_read(:total; store) == 6
+            @test isempty(build().built)
+        end
+    end
 end
 
 @testitem "the jls format round-trips, and is rebuilt on another Julia version" begin

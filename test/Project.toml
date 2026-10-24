@@ -1,13 +1,21 @@
 [deps]
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
+Arrow = "69666777-d1a9-59fb-9406-91d4454c9d45"
+CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
 Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
+Parquet2 = "98572fba-bba0-415d-956f-fa77e587d26d"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 TestItemRunner = "f8b46487-2199-4994-9208-9a1283c18c0a"
 
 [compat]
 Aqua = "0.8"
+Arrow = "2"
+CSV = "0.10, 1"
+DataFrames = "1"
 JET = "0.8, 0.9, 0.10, 0.11, 0.12"
 Makie = "0.24"
+Parquet2 = "0.2"
 Test = "1"
 TestItemRunner = "1"
