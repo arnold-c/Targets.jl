@@ -1,5 +1,6 @@
 const FORMATS = (:jld2, :file)
 const CUES = (:thorough, :always, :never)
+const DEPLOYMENTS = (:spawn, :main)
 
 """
     Target
@@ -18,6 +19,8 @@ struct Target
     source::Union{Nothing, Expr}
     group::Union{Nothing, Symbol}
     seed::Union{Nothing, Symbol, Int}
+    slots::Union{Symbol, Int}
+    deployment::Symbol
 end
 
 "A copy of target `t` with some fields replaced."
@@ -28,7 +31,7 @@ with_fields(t::Target; changes...) = Target((
 
 """
     target(name, f; deps = nothing, format = :jld2, pattern = nothing, cue = :thorough,
-           seed = :auto)
+           seed = :auto, slots = 1, deployment = :spawn)
 
 Declare a target. Unless `deps` is given, dependencies are the argument names
 of `f`, which must therefore have exactly one method with positional arguments.
@@ -36,6 +39,14 @@ of `f`, which must therefore have exactly one method with positional arguments.
 `seed` controls the random number generator `f` runs with: `:auto` seeds it
 from the pipeline seed and the target's name (see [`tar_seed`](@ref)), an
 integer pins the seed, and `nothing` leaves the session's generator alone.
+
+`slots` and `deployment` matter for concurrent builds (`tar_make(; jobs)`).
+`slots` is how many of the `jobs` the target occupies while it runs (an
+integer, or `:all` to run with nothing else alongside); it controls what is
+started next to the target, not how many threads the target itself uses
+(see [`tar_slots`](@ref)). `deployment = :main` runs the target in the task that
+called `tar_make`, never at the same time as another `:main` target, for code
+that is not safe to run concurrently.
 """
 function target(
     name::Symbol,
@@ -46,6 +57,8 @@ function target(
     cue::Symbol = :thorough,
     source::Union{Nothing, Expr} = nothing,
     seed::Union{Nothing, Symbol, Integer} = :auto,
+    slots::Union{Symbol, Integer} = 1,
+    deployment::Symbol = :spawn,
 )
     validate_name(name)
     format in FORMATS ||
@@ -64,7 +77,27 @@ function target(
             "target `$name`: seed must be `:auto`, an integer or `nothing`, got `$seed`",
         ))
     seed_value = seed isa Integer ? Int(seed) : seed
-    return Target(name, f, dependencies, format, pattern, cue, source, nothing, seed_value)
+    (slots === :all || (slots isa Integer && slots >= 1)) ||
+        throw(ArgumentError(
+            "target `$name`: slots must be a positive integer or `:all`, got `$slots`",
+        ))
+    deployment in DEPLOYMENTS ||
+        throw(ArgumentError(
+            "target `$name`: deployment must be one of $DEPLOYMENTS, got `$deployment`",
+        ))
+    return Target(
+        name,
+        f,
+        dependencies,
+        format,
+        pattern,
+        cue,
+        source,
+        nothing,
+        seed_value,
+        slots isa Integer ? Int(slots) : slots,
+        deployment,
+    )
 end
 
 function validate_name(name::Symbol)
@@ -159,4 +192,8 @@ end
     @test_throws ArgumentError target(:x, () -> 1; cue = :sometimes)
     @test_throws "seed must be" target(:x, () -> 1; seed = :random)
     @test target(:x, () -> 1; seed = 3).seed == 3
+    @test_throws "slots must be" target(:x, () -> 1; slots = 0)
+    @test_throws "slots must be" target(:x, () -> 1; slots = :some)
+    @test target(:x, () -> 1; slots = :all).slots === :all
+    @test_throws "deployment must be" target(:x, () -> 1; deployment = :thread)
 end

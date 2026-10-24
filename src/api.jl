@@ -155,11 +155,19 @@ end
 """
     tar_manifest(p::Pipeline)
 
-One row per target (`name`, `deps`, `format`, `pattern`, `cue`), without touching
-the store. `tar_manifest()` loads `_targets.jl`.
+One row per target (`name`, `deps`, `format`, `pattern`, `cue`, `slots`,
+`deployment`), without touching the store. `tar_manifest()` loads `_targets.jl`.
 """
 tar_manifest(p::Pipeline) = [
-    (name = t.name, deps = t.deps, format = t.format, pattern = t.pattern, cue = t.cue)
+    (
+        name = t.name,
+        deps = t.deps,
+        format = t.format,
+        pattern = t.pattern,
+        cue = t.cue,
+        slots = t.slots,
+        deployment = t.deployment,
+    )
     for t in p.targets
 ]
 tar_manifest(; script::AbstractString = default_script()) = tar_manifest(load_pipeline(
@@ -405,7 +413,10 @@ end
 end
 
 @testitem "tar_manifest lists targets without touching the store" begin
-    p = tar_pipeline(target(:a, () -> 1), target(:b, a -> a; cue = :always))
+    p = tar_pipeline(
+        target(:a, () -> 1),
+        target(:b, a -> a; cue = :always, slots = :all, deployment = :main),
+    )
     @test tar_manifest(p) ==
         [
             (
@@ -414,8 +425,18 @@ end
                 format = :jld2,
                 pattern = nothing,
                 cue = :thorough,
+                slots = 1,
+                deployment = :spawn,
             ),
-            (name = :b, deps = [:a], format = :jld2, pattern = nothing, cue = :always),
+            (
+                name = :b,
+                deps = [:a],
+                format = :jld2,
+                pattern = nothing,
+                cue = :always,
+                slots = :all,
+                deployment = :main,
+            ),
         ]
 end
 
