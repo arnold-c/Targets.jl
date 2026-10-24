@@ -201,7 +201,7 @@ end
 """
     tar_make(p::Pipeline; names = nothing, force = false, store = default_store_path(),
              root = nothing, keep_going = false, track_manifest = false,
-             check_stale = true, jobs = 1, io = stdout)
+             check_stale = true, jobs = 1, check_mutation = false, io = stdout)
 
 Build the targets of `p` that are outdated, in dependency order, and return a
 [`BuildSummary`](@ref). With `names`, only those targets and everything they
@@ -229,6 +229,10 @@ calling task. Concurrent targets share the process: they must not `cd`, change
 and BLAS-heavy targets may want `BLAS.set_num_threads(1)`. After a failure,
 running jobs are finished and committed before the error is rethrown; on
 interrupt, running jobs are waited for (interrupt again to abandon them).
+
+`check_mutation = true` hashes every argument before and after each call and
+errors, naming the target and argument, if a target modified its input. It is
+costly, so it is off by default; turn it on in tests and CI.
 """
 function tar_make(
     p::Pipeline;
@@ -240,6 +244,7 @@ function tar_make(
     track_manifest::Bool = false,
     check_stale::Bool = true,
     jobs::Union{Integer, Symbol} = 1,
+    check_mutation::Bool = false,
     io::IO = stdout,
     observe::Function = ctx -> nothing,
 )
@@ -269,7 +274,9 @@ function tar_make(
         Dict{Symbol, Float64}() :
         critical_path(p, selected, last_seconds(s, selected))
     queue = ReadyQueue(p, selected; priority)
-    cd(() -> run_jobs!(ctx, queue; jobs = slots, keep_going), rootdir)
+    with(CHECK_MUTATION => check_mutation) do
+        cd(() -> run_jobs!(ctx, queue; jobs = slots, keep_going), rootdir)
+    end
     sm = sort_summary!(ctx.summary, p)
     isempty(sm.errored) && record_manifest!(s, rootdir)
     log!(
@@ -355,6 +362,7 @@ function tar_make_fresh(
     track_manifest::Bool = false,
     check_stale::Bool = true,
     jobs::Union{Integer, Symbol} = 1,
+    check_mutation::Bool = false,
     io::IO = stdout,
 )
     summary_path = tempname()
@@ -371,6 +379,7 @@ function tar_make_fresh(
         track_manifest = $(repr(track_manifest)),
         check_stale = $(repr(check_stale)),
         jobs = $(repr(jobs)),
+        check_mutation = $(repr(check_mutation)),
     )
     Targets.write_summary($(repr(summary_path)), summary)
     """

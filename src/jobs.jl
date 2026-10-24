@@ -83,13 +83,29 @@ function execute(job::Job)
     elapsed() = (time_ns() - started) / 1.0e9
     try
         job.load_error === nothing || throw(job.load_error)
+        before = CHECK_MUTATION[] ? map(canonical_hash, job.args) : nothing
         value = call_target(job.target.f, job.args, job.seed)
         seconds = elapsed()
+        before === nothing || check_unmutated(job, before)
         consumer_value, vhash, stored = persist_value(job, value)
         return JobResult(job, consumer_value, vhash, stored, seconds, nothing, nothing)
     catch e
         e isa InterruptException && rethrow()
         return JobResult(job, nothing, "", (;), elapsed(), e, catch_backtrace())
+    end
+end
+
+"Whether `execute` checks that targets leave their arguments unchanged (`tar_make(; check_mutation)`)."
+const CHECK_MUTATION = ScopedValue(false)
+
+function check_unmutated(job::Job, before::Vector{String})
+    for (i, h) in enumerate(before)
+        canonical_hash(job.args[i]) == h && continue
+        t = job.target
+        error(
+            "target `$(job.key)` mutated its argument `$(t.deps[i])`; targets must not " *
+                "modify their inputs, which are shared with other consumers (copy it first)",
+        )
     end
 end
 
@@ -148,6 +164,25 @@ function job_record(r::JobResult)
         seed = seed_string(job.seed),
         r.stored...,
     )
+end
+
+@testitem "check_mutation catches a target that modifies its input" begin
+    p = tar_pipeline(
+        target(:xs, () -> [1, 2]),
+        target(:fine, xs -> sum(xs)),
+        target(:bad, xs -> push!(xs, 3)),
+    )
+    mktempdir() do dir
+        build(; kwargs...) = tar_make(
+            p;
+            store = joinpath(dir, "_targets"),
+            root = dir,
+            io = devnull,
+            kwargs...,
+        )
+        @test_throws "`bad` mutated its argument `xs`" build(; check_mutation = true)
+        @test build(; force = true).built == [:xs, :fine, :bad] # unchecked by default
+    end
 end
 
 @testitem "execute returns failures instead of throwing" begin
