@@ -73,6 +73,10 @@ Suffixes are the keys of a `NamedTuple` or `Dict`; otherwise the values themselv
 they are symbols, strings, integers or tuples of those (`Iterators.product` crossings give
 `fit_ols_1`); otherwise positions. Override with `names = [...]` or `names = v -> ...`.
 The result maps template names to their targets (`m.fit`), and `tar_pipeline` flattens it.
+A template name also works in every `names` keyword: `tar_make(names = [:fit])`,
+`tar_invalidate(names = :fit)` and `tar_delete(names = :fit)` act on all of its targets,
+while a generated name such as `:fit_ols` acts on that one alone (the next `tar_make`
+rebuilds only it and its descendants).
 
 `tar_map` is a convenience: a comprehension works too, with explicit `deps` for
 generated names:
@@ -125,7 +129,8 @@ packages that moved, and `track_manifest = true` rebuilds everything.
 
 `tar_make(; names, force, keep_going, fresh, ...)`:
 
-- `names = [:model]` builds those targets and everything they depend on.
+- `names = [:model]` builds those targets and everything they depend on; a `tar_map`
+  template name stands for all of its targets.
 - `force = true` rebuilds the selection (or everything) whatever its status.
 - `keep_going = true` carries on with independent targets after a failure.
 - `fresh = true` builds in a new Julia process, so no stale session state can leak in

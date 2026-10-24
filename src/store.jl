@@ -67,6 +67,29 @@ write_store_info(s::Store, info::AbstractDict) = atomic_open(
     joinpath(s.root, "store.toml"),
 )
 
+"""
+    record_groups!(s, groups)
+
+Save the pipeline's [`tar_map`](@ref) groups in `store.toml`, so helpers that
+see only the store (`tar_invalidate`, `tar_delete`) can expand group names.
+"""
+function record_groups!(s::Store, groups::AbstractDict{Symbol, Vector{Symbol}})
+    info = read_store_info(s)
+    stored = Dict{String, Any}(string(k) => string.(v) for (k, v) in groups)
+    get(info, "groups", Dict{String, Any}()) == stored && return nothing
+    info["groups"] = stored
+    write_store_info(s, info)
+    return nothing
+end
+
+"The groups recorded by the last `tar_make` (none if the store does not exist yet)."
+function stored_groups(s::Store)
+    isfile(joinpath(s.root, "store.toml")) || return Dict{Symbol, Vector{Symbol}}()
+    return Dict{Symbol, Vector{Symbol}}(
+        Symbol(k) => Symbol.(v) for (k, v) in get(read_store_info(s), "groups", Dict())
+    )
+end
+
 object_path(s::Store, key) = joinpath(s.root, "objects", string(key) * ".jld2")
 meta_path(s::Store, key) = joinpath(s.root, "meta", string(key) * ".toml")
 log_path(s::Store) = joinpath(s.root, "log", "progress.log")

@@ -207,6 +207,7 @@ function tar_make(
     rootdir = something(root, project_root())
     s = store isa Store ? store : open_store(store)
     selected = selected_order(p, names)
+    record_groups!(s, p.groups)
     check_supported(p, selected)
     ctx = BuildContext(
         p,

@@ -14,6 +14,7 @@ Base.showerror(io::IO, e::PipelineError) = print(io, "PipelineError: ", e.msg)
 A validated, immutable collection of targets with its dependency graph.
 `graph` has an edge `dep => dependent`; `order` is a deterministic build order.
 `track` lists extra modules or directories whose code counts as user code.
+`groups` maps each [`tar_map`](@ref) template name to its generated targets.
 """
 struct Pipeline
     targets::Vector{Target}
@@ -21,6 +22,7 @@ struct Pipeline
     graph::SimpleDiGraph{Int}
     order::Vector{Symbol}
     track::Vector{Any}
+    groups::Dict{Symbol, Vector{Symbol}}
 end
 
 """
@@ -48,7 +50,20 @@ function Pipeline(targets::Vector{Target}, track::Vector{Any} = Any[])
     check_patterns(targets)
     graph = build_graph(targets, index)
     order = build_order(targets, graph)
-    return Pipeline(targets, index, graph, order, track)
+    return Pipeline(targets, index, graph, order, track, build_groups(targets, index))
+end
+
+function build_groups(targets, index)
+    groups = Dict{Symbol, Vector{Symbol}}()
+    for t in targets
+        t.group === nothing && continue
+        haskey(index, t.group) &&
+            throw(PipelineError(
+                "tar_map group `$(t.group)` has the same name as a target; rename one of them",
+            ))
+        push!(get!(groups, t.group, Symbol[]), t.name)
+    end
+    return groups
 end
 
 function build_index(targets)
@@ -169,11 +184,20 @@ end
 
 get_target(p::Pipeline, name::Symbol) = p.targets[p.index[name]]
 
-function check_names(p::Pipeline, names)
-    for n in names
-        haskey(p.index, n) ||
-            throw(PipelineError("no target named `$n`" * hint_suffix(n, keys(p.index))))
+"""
+    resolve_names(p, names)
+
+`names` with each [`tar_map`](@ref) group name replaced by the targets of that
+group; errors on names that are neither.
+"""
+function resolve_names(p::Pipeline, names)
+    resolved = unique(reduce(vcat, (get(p.groups, n, [n]) for n in names); init = Symbol[]))
+    for n in resolved
+        haskey(p.index, n) && continue
+        known = union(keys(p.index), keys(p.groups))
+        throw(PipelineError("no target or group named `$n`" * hint_suffix(n, known)))
     end
+    return resolved
 end
 
 function hint_suffix(name, candidates)
@@ -190,7 +214,7 @@ The targets in `names` together with everything they transitively depend on,
 in build order.
 """
 function ancestors(p::Pipeline, names)
-    check_names(p, names)
+    names = resolve_names(p, names)
     seen = falses(nv(p.graph))
     queue = [p.index[n] for n in names]
     foreach(v -> seen[v] = true, queue)
@@ -212,7 +236,7 @@ The targets in `names` together with everything that transitively depends on
 them, in build order.
 """
 function descendants(p::Pipeline, names)
-    check_names(p, names)
+    names = resolve_names(p, names)
     seen = falses(nv(p.graph))
     queue = [p.index[n] for n in names]
     foreach(v -> seen[v] = true, queue)
@@ -299,6 +323,7 @@ end
     @test ancestors(p, [:other, :clean]) == [:raw, :clean, :other]
     @test selected_order(p, nothing) == p.order
     @test_throws "did you mean `model`" ancestors(p, [:modle])
+    @test_throws "no target or group named" ancestors(p, [:nothing_like_it])
 end
 
 @testitem "every names keyword takes a vector of symbols, or a single symbol" begin
@@ -315,6 +340,23 @@ end
         tar_delete(; names = [:a], store)
         @test tar_outdated(p; names = [:b], store, root = dir)[1].name == :a
     end
+end
+
+@testitem "tar_map group names select every arm" begin
+    using Targets: ancestors, descendants, resolve_names, PipelineError
+    m = tar_map((:a, :b)) do k
+        (target(:fit, raw -> k), target(:summary, fit -> fit))
+    end
+    p = tar_pipeline(target(:raw, () -> 1), m, tar_combine(:all, (xs...) -> xs, m.summary))
+    @test p.groups == Dict(:fit => [:fit_a, :fit_b], :summary => [:summary_a, :summary_b])
+    @test resolve_names(p, [:fit, :fit_a, :raw]) == [:fit_a, :fit_b, :raw]
+    @test ancestors(p, [:fit]) == [:raw, :fit_a, :fit_b]
+    @test descendants(p, [:summary]) == [:summary_a, :summary_b, :all]
+    @test_throws "did you mean `fit`" ancestors(p, [:fitt])
+    @test_throws "same name as a target" tar_pipeline(
+        target(:fit, () -> 1),
+        tar_map(k -> target(:fit, () -> k), (:a,)),
+    )
 end
 
 @testitem "descendants returns the downstream closure in build order" begin

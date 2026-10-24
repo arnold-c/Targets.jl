@@ -60,18 +60,35 @@ function remove_target_files!(s::Store, name)
 end
 
 """
+    stored_target_names(s, names)
+
+`names` with each [`tar_map`](@ref) group name replaced by its targets, using the
+groups recorded by the last `tar_make`.
+"""
+function stored_target_names(s::Store, names)
+    groups = stored_groups(s)
+    return unique(reduce(
+        vcat,
+        (get(groups, n, [n]) for n in as_names(names));
+        init = Symbol[],
+    ))
+end
+
+"""
     tar_invalidate(; names, store = default_store_path())
 
 Delete the metadata of the targets in `names` (a vector of symbols, or one symbol)
 so that they rebuild on the next run. Their stored objects stay, so `tar_read`
-keeps working in the meantime.
+keeps working in the meantime. A [`tar_map`](@ref) group name (as of the last
+`tar_make`) stands for all of its targets; a single generated name affects only
+that one, and the next `tar_make` rebuilds only it and what depends on it.
 """
 function tar_invalidate(;
     names::Union{Symbol, AbstractVector{Symbol}},
     store::Union{Store, AbstractString} = default_store_path(),
 )
     s = as_store(store)
-    for name in as_names(names)
+    for name in stored_target_names(s, names)
         delete_meta(s, name)
         rm(joinpath(s.root, "meta", string(name)); recursive = true, force = true)
     end
@@ -81,14 +98,15 @@ end
 """
     tar_delete(; names, store = default_store_path())
 
-Delete the stored object and metadata of the targets in `names`.
+Delete the stored object and metadata of the targets in `names`. As with
+[`tar_invalidate`](@ref), a [`tar_map`](@ref) group name stands for all of its targets.
 """
 function tar_delete(;
     names::Union{Symbol, AbstractVector{Symbol}},
     store::Union{Store, AbstractString} = default_store_path(),
 )
     s = as_store(store)
-    foreach(name -> remove_target_files!(s, name), as_names(names))
+    foreach(name -> remove_target_files!(s, name), stored_target_names(s, names))
     return nothing
 end
 
@@ -218,6 +236,43 @@ end
         @test !has_object(s, :y) && !has_object(s, :z)
         @test read_meta(s, :z) === nothing
         @test tar_make(p; store, root = dir, io = devnull).built == [:y, :z]
+    end
+end
+
+@testitem "make, invalidate and delete accept tar_map groups; single arms stay single" setup = [
+    SourceFixtures,
+] begin
+    using Targets: open_store, has_object, read_meta
+    mktempdir() do dir
+        code = """
+        m = tar_map((low = 1, high = 2)) do k
+            (target(:shifted, raw -> raw + k), target(:summary, shifted -> 2shifted))
+        end
+        p = tar_pipeline(target(:raw, () -> 10), m, tar_combine(:total, (xs...) -> sum(xs), m.summary))
+        """
+        store = joinpath(dir, "_targets")
+        s = open_store(store)
+        @test build_source(code, dir; names = [:shifted]).built ==
+            [:raw, :shifted_low, :shifted_high]
+
+        @test build_source(code, dir).built == [:summary_low, :summary_high, :total]
+
+        # one arm: only it reruns; early cutoff stops at its unchanged value
+        tar_invalidate(; names = :shifted_low, store)
+        @test read_meta(s, :shifted_high) !== nothing
+        r = build_source(code, dir)
+        @test r.built == [:shifted_low]
+        @test :shifted_high in r.skipped
+
+        tar_invalidate(; names = [:shifted], store)
+        @test read_meta(s, :shifted_low) === nothing &&
+            read_meta(s, :shifted_high) === nothing
+        @test build_source(code, dir).built == [:shifted_low, :shifted_high]
+
+        tar_delete(; names = :summary, store)
+        @test !has_object(s, :summary_low) && !has_object(s, :summary_high)
+        @test has_object(s, :shifted_low)
+        @test build_source(code, dir).built == [:summary_low, :summary_high]
     end
 end
 
