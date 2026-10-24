@@ -342,6 +342,8 @@ Once the core works, the helpers are thin wrappers over the store and the stalen
 
 **Decision: `tar_invalidate` keeps the object.** Deleting only metadata forces a rebuild while leaving `tar_read` working in the meantime. `tar_delete` is the explicit way to remove data.
 
+**Decision: reads say when a value is stale.** `tar_read` and `@tar_load` take `on_outdated = :warn | :error | :ignore`, defaulting to the `on_outdated` preference of Targets (Preferences.jl, `LocalPreferences.toml`), else `:warn`. When reading the project's own store (or given `script`), the check is `tar_outdated` on the pipeline for the requested targets, so code edits count; otherwise, and for targets no longer in the pipeline, only a missing record (invalidated) counts. `@tar_load` checks its names together, so it gives at most one warning. `:ignore` also skips the check, which loads the pipeline and hashes code.
+
 ### Visualization
 
 **Decision: subgraphs by name.** `tar_visnetwork(names = [:model])` and `tar_dot(names = [:model])` show the named targets and their ancestors (the same `ancestors` helper as subset builds), which is the original `tar_glimpse` idea. A `descendants = true` keyword adds everything downstream of the named targets, for answering "what does this feed into?". `names = nothing` shows the whole pipeline.

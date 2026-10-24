@@ -12,6 +12,7 @@ using JuliaSyntax:
     kind,
     last_byte,
     source_location
+using Preferences: Preferences
 using SHA: SHA
 using Serialization: Serialization
 using TOML: TOML

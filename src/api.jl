@@ -1,12 +1,73 @@
 """
-    tar_read(name; store = default_store_path())
+    tar_read(name; store = default_store_path(), script = nothing,
+             on_outdated = outdated_preference())
 
 The stored value of target `name`. For a file target this is its path (or vector
 of paths), relative to the project root; for a branching target it is the vector
 of its branch values in pattern order.
+
+The value is the last one stored, even if the target is no longer up to date.
+`on_outdated` says what happens then: `:warn` (the default), `:error`, or
+`:ignore` (which also skips the check). Set the default for a project with the
+`on_outdated` preference, e.g. in `LocalPreferences.toml`:
+
+```toml
+[Targets]
+on_outdated = "error"
+```
+
+When reading the project's own store, the check is [`tar_outdated`](@ref) on the
+project's `_targets.jl` (or on `script`), so code edits count. Otherwise, and for
+targets no longer in the pipeline, only an invalidated target (one with no
+build record) counts as outdated.
 """
-function tar_read(name::Symbol; store::Union{Store, AbstractString} = default_store_path())
+tar_read(name::Symbol; kwargs...) = only(read_targets([name]; kwargs...))
+
+"""
+    @tar_load names...
+    @tar_load store = path script = path on_outdated = :error names...
+
+Assign the stored value of each target to a variable of the same name in the
+caller's scope, so it works at the REPL, inside functions and inside modules.
+Options go before the names and work as in [`tar_read`](@ref); the targets are
+checked together, so at most one warning is given.
+"""
+macro tar_load(args...)
+    names = collect(Any, args)
+    options = Expr[]
+    while !isempty(names) &&
+            Meta.isexpr(names[1], :(=)) &&
+            names[1].args[1] in (:store, :script, :on_outdated)
+        opt = popfirst!(names)
+        push!(options, Expr(:kw, opt.args[1], esc(opt.args[2])))
+    end
+    (!isempty(names) && all(n -> n isa Symbol, names)) ||
+        error("@tar_load expects one or more target names, e.g. @tar_load model clean_data")
+    values = gensym(:values)
+    read = Expr(
+        :call,
+        GlobalRef(@__MODULE__, :read_targets),
+        Expr(:parameters, options...),
+        QuoteNode(Symbol[names...]),
+    )
+    loads = [:($(esc(n)) = $values[$i]) for (i, n) in enumerate(names)]
+    return Expr(:block, :($values = $read), loads..., nothing)
+end
+
+"The stored values of `names`, after checking them together (see [`tar_read`](@ref))."
+function read_targets(
+    names::Vector{Symbol};
+    store::Union{Store, AbstractString} = default_store_path(),
+    script::Union{Nothing, AbstractString} = nothing,
+    on_outdated::Symbol = outdated_preference(),
+)
     s = as_store(store)
+    values = [read_value(s, n) for n in names]
+    check_reads(s, names, script, check_on_outdated(on_outdated))
+    return values
+end
+
+function read_value(s::Store, name::Symbol)
     record = read_meta(s, name)
     (record !== nothing && record.format == "file") && return file_value(record)
     # a branching target has records but no object of its own: its value is its branches
@@ -14,26 +75,67 @@ function tar_read(name::Symbol; store::Union{Store, AbstractString} = default_st
     return read_object(s, name)
 end
 
-"""
-    @tar_load names...
-    @tar_load store = path names...
+const ON_OUTDATED = (:warn, :error, :ignore)
 
-Assign the stored value of each target to a variable of the same name in the
-caller's scope, so it works at the REPL, inside functions and inside modules.
 """
-macro tar_load(args...)
-    store = :(default_store_path())
-    names = collect(Any, args)
-    if !isempty(names) && Meta.isexpr(names[1], :(=)) && names[1].args[1] === :store
-        store = names[1].args[2]
-        popfirst!(names)
-    end
-    (!isempty(names) && all(n -> n isa Symbol, names)) ||
-        error("@tar_load expects one or more target names, e.g. @tar_load model clean_data")
-    reader = GlobalRef(@__MODULE__, :tar_read)
-    path = gensym(:store)
-    loads = [:($(esc(n)) = $reader($(QuoteNode(n)); store = $path)) for n in names]
-    return Expr(:block, :($path = $(esc(store))), loads..., nothing)
+    outdated_preference()
+
+The default `on_outdated` of [`tar_read`](@ref) and [`@tar_load`](@ref): the
+`on_outdated` preference of Targets (e.g. in `LocalPreferences.toml`), or `:warn`.
+"""
+outdated_preference() = check_on_outdated(Symbol(Preferences.load_preference(
+    @__MODULE__,
+    "on_outdated",
+    "warn",
+)))
+
+check_on_outdated(mode::Symbol) = mode in ON_OUTDATED ?
+    mode :
+    throw(ArgumentError("on_outdated must be one of $ON_OUTDATED, got `$mode`"))
+
+# The pipeline to check reads against: `script`, or the project's `_targets.jl`
+# when reading the project's own store.
+function read_script(s::Store, script)
+    script === nothing || return script
+    Base.active_project() === nothing && return nothing
+    s.root == abspath(default_store_path()) || return nothing
+    path = default_script()
+    return isfile(path) ? path : nothing
+end
+
+"`(name, reason)` for each of `names` whose stored value is not up to date."
+function outdated_reads(s::Store, names::Vector{Symbol}, script)
+    path = read_script(s, script)
+    path === nothing && return store_outdated(s, names)
+    p = load_pipeline(path)
+    checked = filter(n -> haskey(p.index, n), names)
+    return vcat(
+        pipeline_outdated(p, s, checked, dirname(path)),
+        store_outdated(s, setdiff(names, checked)),
+    )
+end
+
+function pipeline_outdated(p::Pipeline, s::Store, names::Vector{Symbol}, root::AbstractString)
+    isempty(names) && return Tuple{Symbol, Symbol}[]
+    return Tuple{Symbol, Symbol}[
+        (r.name, r.reason) for r in tar_outdated(p; names, store = s, root) if r.name in names
+    ]
+end
+
+# Without the pipeline, only a missing build record (an invalidated target) shows.
+store_outdated(s::Store, names) =
+    Tuple{Symbol, Symbol}[(n, :missing) for n in names if read_meta(s, n) === nothing]
+
+function check_reads(s::Store, names::Vector{Symbol}, script, on_outdated::Symbol)
+    on_outdated === :ignore && return nothing
+    outdated = outdated_reads(s, names, script)
+    isempty(outdated) && return nothing
+    message = "read stored values that are not up to date: " *
+        join(("`$n` ($reason)" for (n, reason) in outdated), ", ") *
+        "; run tar_make() to update them (reasons as in tar_outdated())"
+    on_outdated === :error && error(message)
+    @warn message
+    return nothing
 end
 
 """
@@ -97,7 +199,11 @@ function tar_invalidate(;
 )
     s = as_store(store)
     (names === nothing && ask) &&
-        !confirm("Invalidate every target in $(s.root), so the whole pipeline rebuilds?"; input, io) &&
+        !confirm(
+            "Invalidate every target in $(s.root), so the whole pipeline rebuilds?";
+            input,
+            io,
+        ) &&
         return nothing
     for name in stored_target_names(s, names)
         delete_meta(s, name)
@@ -218,6 +324,72 @@ end
     end
 end
 
+@testitem "reading an outdated target warns, errors or is ignored" setup = [
+    StoreFixtures,
+] begin
+    mktempdir() do dir
+        p, store = built_store(dir)
+        @test (@test_logs tar_read(:y; store)) == 2 # up to date: silent
+        tar_invalidate(; names = :y, store)
+        @test (@test_logs (:warn, r"`y` \(missing\)") tar_read(:y; store)) == 2
+        @test_throws "`y` (missing)" tar_read(:y; store, on_outdated = :error)
+        @test (@test_logs tar_read(:y; store, on_outdated = :ignore)) == 2
+        @test_throws "on_outdated must be one of" tar_read(:y; store, on_outdated = :loud)
+
+        # one check, one warning, for all the names
+        local x, y, z
+        @test_logs (:warn, r"`y` \(missing\)") @tar_load store = store x y z
+        @test (x, y, z) == (1, 2, 3)
+        @test_throws "not up to date" @tar_load store = store on_outdated = :error y
+    end
+end
+
+@testitem "reads are checked against the pipeline script, so code edits count" setup = [
+    SourceFixtures,
+] begin
+    mktempdir() do dir
+        code(k) = """
+        p = tar_pipeline(target(:x, () -> $k), target(:y, x -> x + 1))
+        """
+        build_source(code(1), dir)
+        store = joinpath(dir, "_targets")
+        script = joinpath(dir, "src.jl")
+        @test (@test_logs tar_read(:y; store, script)) == 2
+        write(script, code(5))
+        @test (
+            @test_logs (:warn, r"`y` \(upstream_outdated\)") tar_read(:y; store, script)
+        ) ==
+            2
+        @test (@test_logs tar_read(:y; store)) == 2 # no script: store-only check
+    end
+end
+
+@testitem "the on_outdated default comes from the Targets preference" begin
+    using Targets: outdated_preference
+    @test outdated_preference() == :warn
+    mktempdir() do dir
+        write(
+            joinpath(dir, "Project.toml"),
+            "[deps]\nTargets = \"ccd79084-dcf1-4aa0-8fea-6744ff5e7af6\"\n",
+        )
+        write(
+            joinpath(dir, "LocalPreferences.toml"),
+            "[Targets]\non_outdated = \"error\"\n",
+        )
+        pushfirst!(LOAD_PATH, dir)
+        try
+            @test outdated_preference() == :error
+            write(
+                joinpath(dir, "LocalPreferences.toml"),
+                "[Targets]\non_outdated = \"loud\"\n",
+            )
+            @test_throws "on_outdated must be one of" outdated_preference()
+        finally
+            popfirst!(LOAD_PATH)
+        end
+    end
+end
+
 @testitem "tar_manifest lists targets without touching the store" begin
     p = tar_pipeline(target(:a, () -> 1), target(:b, a -> a; cue = :always))
     @test tar_manifest(p) ==
@@ -241,7 +413,7 @@ end
         p, store = built_store(dir)
         s = open_store(store)
         tar_invalidate(; names = [:y], store)
-        @test tar_read(:y; store) == 2
+        @test (@test_logs (:warn, r"`y` \(missing\)") tar_read(:y; store)) == 2
         @test read_meta(s, :y) === nothing
         built = tar_make(p; store, root = dir, io = devnull).built
         @test built == [:y] # z is unchanged by early cutoff
@@ -300,7 +472,7 @@ end
         tar_invalidate(; names = :x, store, input = IOBuffer(), io = devnull) # never asks
         tar_invalidate(; store, input = IOBuffer("y\n"), io = devnull)
         @test isempty(meta_keys(open_store(store)))
-        @test tar_read(:z; store) == 3
+        @test tar_read(:z; store, on_outdated = :ignore) == 3
         @test tar_make(p; store, root = dir, io = devnull).built == [:x, :y, :z]
         tar_invalidate(; store, ask = false)
         @test isempty(meta_keys(open_store(store)))

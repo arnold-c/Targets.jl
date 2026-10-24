@@ -150,7 +150,7 @@ explanation rather than record the wrong hashes. Load Revise, restart, or use
 
 | Function | Does |
 | --- | --- |
-| `tar_read(:name)` / `@tar_load a b` | Read stored values |
+| `tar_read(:name)` / `@tar_load a b` | Read stored values; warns if one is not up to date (`on_outdated = :error` or `:ignore` to change that) |
 | `tar_outdated()` | Targets that would rebuild, with reasons (conservative) |
 | `tar_manifest()` / `tar_meta()` | Target table / stored metadata table |
 | `tar_invalidate(names = [:a])` | Forget a target's metadata so it rebuilds; keep its object. `tar_invalidate()` does this for every target, after asking (`ask = false` skips the question) |
@@ -161,6 +161,16 @@ explanation rather than record the wrong hashes. Load Revise, restart, or use
 | `tar_visnetwork(; names, descendants)` | Plot (needs a Makie backend, e.g. `using CairoMakie`) |
 
 ## Practical notes
+
+- `tar_read` and `@tar_load` return the last stored value even when a target is
+  outdated or invalidated, with a warning. For the project's own store the check
+  uses `_targets.jl`, so code edits count. Make it an error (or skip the check)
+  for a project in its `LocalPreferences.toml`:
+
+  ```toml
+  [Targets]
+  on_outdated = "error"   # or "warn" (default), "ignore"
+  ```
 
 - Put functions and types in a **named module or package**. Values are stored with
   JLD2, which records types by module path; types defined inside `_targets.jl` (a
