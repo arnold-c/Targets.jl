@@ -63,7 +63,7 @@ end
 function stored_value_hash(store::Store, key)
     record = read_meta(store, key)
     record === nothing || return record.value_hash
-    return hash_file(object_path(store, key))
+    return hash_file(something(find_object(store, key), object_path(store, key)))
 end
 
 """

@@ -493,7 +493,7 @@ log_start!(ctx::BuildContext, job::Job) = log!(ctx, "▶ $(job.key) ($(job.reaso
 
 # Record the failure but leave the last good object in place.
 function record_failure!(ctx::BuildContext, t::Target, e; key = t.name)
-    previous = something(read_meta(ctx.store, key), Record(; format = string(t.format)))
+    previous = something(read_meta(ctx.store, key), Record(; format = record_format(t)))
     message = first(sprint(showerror, e), 2000)
     write_meta(ctx.store, key, update(previous; error = message))
 end

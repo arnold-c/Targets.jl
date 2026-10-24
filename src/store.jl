@@ -91,7 +91,31 @@ function stored_groups(s::Store)
     )
 end
 
-object_path(s::Store, key) = joinpath(s.root, "objects", string(key) * ".jld2")
+"Where the object of `key` is stored in `format`."
+object_path(s::Store, key, format::StorageFormat = DEFAULT_FORMAT) = joinpath(
+    s.root,
+    "objects",
+    string(key) * "." * extension(format),
+)
+
+"Object files stored for `key`, in any format (normally at most one)."
+function object_files(s::Store, key)
+    base = joinpath(s.root, "objects", string(key))
+    dir = dirname(base)
+    isdir(dir) || return String[]
+    prefix = basename(base) * "."
+    return [
+        joinpath(dir, f)
+        for f in readdir(dir)
+        if startswith(f, prefix) && !occursin(".tmp-", f) && isfile(joinpath(dir, f))
+    ]
+end
+
+"The object file of `key`, or `nothing`."
+find_object(s::Store, key) = (
+    files = object_files(s, key);
+    isempty(files) ? nothing : first(files)
+)
 meta_path(s::Store, key) = joinpath(s.root, "meta", string(key) * ".toml")
 log_path(s::Store) = joinpath(s.root, "log", "progress.log")
 
@@ -119,20 +143,33 @@ atomic_open(f, path::AbstractString) = atomic_write(tmp -> open(f, tmp, "w"), pa
 ## Objects
 
 """
-Write `value` as the JLD2 object for `key`. Atomic.
+    write_object(s, key, value; format = JLD2Format())
+
+Write `value` as the object for `key` in `format`. Atomic. Objects of `key`
+in other formats are removed afterwards.
 """
-write_object(s::Store, key, value) = atomic_write(
-    tmp -> JLD2.jldsave(tmp; value),
-    object_path(s, key),
-)
+function write_object(s::Store, key, value; format::StorageFormat = DEFAULT_FORMAT)
+    path = object_path(s, key, format)
+    atomic_write(tmp -> write_value(format, tmp, value), path)
+    foreach(f -> f == path || rm(f; force = true), object_files(s, key))
+    return path
+end
 
-has_object(s::Store, key) = isfile(object_path(s, key))
+has_object(s::Store, key) = find_object(s, key) !== nothing
 
+"""
+    read_object(s, key)
+
+The stored object of `key`, read in the format recorded in its metadata (or,
+without metadata, the format its file extension names).
+"""
 function read_object(s::Store, key)
-    path = object_path(s, key)
-    isfile(path) || error("no stored object for target `$key` at $path")
+    path = find_object(s, key)
+    path === nothing &&
+        error("no stored object for target `$key` at $(object_path(s, key))")
+    format = object_format(s, key, path)
     try
-        return JLD2.load(path, "value")
+        return read_value(format, path)
     catch e
         e isa InterruptException && rethrow()
         error(
@@ -143,7 +180,18 @@ function read_object(s::Store, key)
     end
 end
 
-delete_object(s::Store, key) = rm(object_path(s, key); force = true)
+function object_format(s::Store, key, path::AbstractString)
+    record = read_meta(s, key)
+    (record === nothing || record.format == "file") || return recorded_format(record.format)
+    ext = last(split(basename(path), '.'))
+    for name in available_formats()
+        format = storage_format(Val(name))
+        extension(format) == ext && return format
+    end
+    error("no storage format is available for the object $path")
+end
+
+delete_object(s::Store, key) = foreach(f -> rm(f; force = true), object_files(s, key))
 
 ## Metadata
 

@@ -118,7 +118,7 @@ value hash, and any extra record fields (a file target keeps no object).
 function persist_value(job::Job, value)
     t = job.target
     if job.branch > 0
-        path = write_object(job.store, job.key, value)
+        path = write_object(job.store, job.key, value; format = resolve_format(t.format))
         return value, object_hash(value, path), (;)
     end
     if t.format == :file
@@ -136,7 +136,7 @@ function persist_value(job::Job, value)
             )
         return (scalar ? first(paths) : paths), state.value_hash, stored
     end
-    path = write_object(job.store, job.key, value)
+    path = write_object(job.store, job.key, value; format = resolve_format(t.format))
     stored = (;)
     if job.pattern_use !== nothing && t.pattern === nothing
         value isa AbstractVector ||
@@ -158,7 +158,7 @@ function job_record(r::JobResult)
         hash_source = string(job.cmd.kind),
         dep_hashes = Dict{String, String}(string(d) => h for (d, h) in job.dep_hashes),
         value_hash = r.value_hash,
-        format = string(job.target.format),
+        format = record_format(job.target),
         built_at = string(Dates.now(Dates.UTC)),
         r.seconds,
         seed = seed_string(job.seed),

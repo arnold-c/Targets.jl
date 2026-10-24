@@ -639,6 +639,8 @@ read_value(::JLD2Format, path) = JLD2.load(path, "value")
 
 `:file` stays a separate target *kind* (it stores paths, not objects), not a `StorageFormat`; `value_kind` already makes that distinction. `object_path` takes the extension from the format, and reading uses the format **recorded** in the target's metadata, so `tar_read` works after the declaration changed. The `FORMATS` check becomes "`storage_format(Val(f))` has a method", with an error listing the formats currently available and naming the package to load ("`format = :arrow` needs `using Arrow`").
 
+*Status: implemented in `src/formats.jl`. Objects are located by key whatever their extension (`object_files`/`find_object`), so `has_object`, `delete_object`, pruning and `tar_prune` need no format; writing an object removes the key's objects in other formats. Without a record (after `tar_invalidate`) the reader is chosen by file extension.*
+
 **13.2 Behavioral: formats.**
 
 - `:jls` (Serialization, core): the fastest for arbitrary Julia values, but tied to the Julia version. On a failed load during `tar_make`, treat the target as `:missing` and rebuild instead of erroring; `tar_read` errors with that explanation.

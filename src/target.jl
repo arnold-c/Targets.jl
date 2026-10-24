@@ -1,4 +1,3 @@
-const FORMATS = (:jld2, :file)
 const CUES = (:thorough, :always, :never)
 const DEPLOYMENTS = (:spawn, :main)
 
@@ -61,10 +60,7 @@ function target(
     deployment::Symbol = :spawn,
 )
     validate_name(name)
-    format in FORMATS ||
-        throw(ArgumentError(
-            "target `$name`: format must be one of $FORMATS, got `$format`",
-        ))
+    format === :file || resolve_format(format)
     cue in CUES ||
         throw(ArgumentError("target `$name`: cue must be one of $CUES, got `$cue`"))
     dependencies = deps === nothing ?

@@ -40,6 +40,9 @@ include("hashing.jl")
 include("seeds.jl")
 export tar_seed
 
+include("formats.jl")
+export StorageFormat
+
 include("store.jl")
 export tar_meta
 

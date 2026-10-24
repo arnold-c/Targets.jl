@@ -176,7 +176,7 @@ tar_manifest(; script::AbstractString = default_script()) = tar_manifest(load_pi
 
 # Everything stored under a target's name: its object, its record, and any branches.
 function remove_target_files!(s::Store, name)
-    rm(object_path(s, name); force = true)
+    delete_object(s, name)
     rm(joinpath(s.root, "objects", string(name)); recursive = true, force = true)
     delete_meta(s, name)
     rm(joinpath(s.root, "meta", string(name)); recursive = true, force = true)
@@ -256,7 +256,7 @@ function stored_names(s::Store)
     if isdir(objects)
         for entry in readdir(objects)
             occursin(".tmp-", entry) && continue
-            push!(names, endswith(entry, ".jld2") ? chopsuffix(entry, ".jld2") : entry)
+            push!(names, first(split(entry, '.')))
         end
     end
     return Symbol[Symbol(n) for n in sort!(collect(names))]

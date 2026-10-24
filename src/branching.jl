@@ -114,12 +114,11 @@ end
 
 "Remove the objects and records of branches that are no longer in the pattern."
 function prune_branches!(store::Store, name::Symbol, keep::Vector{String})
-    for (dir, ext) in (("objects", ".jld2"), ("meta", ".toml"))
+    for dir in ("objects", "meta")
         path = joinpath(store.root, dir, string(name))
         isdir(path) || continue
         for entry in readdir(path)
-            endswith(entry, ext) || continue
-            chopsuffix(entry, ext) in keep || rm(joinpath(path, entry); force = true)
+            first(split(entry, '.')) in keep || rm(joinpath(path, entry); force = true)
         end
     end
 end
@@ -259,7 +258,7 @@ function finish_branching!(ctx::BuildContext, progress::BranchProgress)
             hash_source = string(progress.cmd.kind),
             dep_hashes = deps,
             value_hash,
-            format = string(t.format),
+            format = record_format(t),
             built_at = string(Dates.now(Dates.UTC)),
             seed = seed_string(resolve_seed(ctx.pipeline, t)),
             branches = ids,
