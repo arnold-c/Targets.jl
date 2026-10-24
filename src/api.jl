@@ -62,17 +62,21 @@ function read_targets(
     on_outdated::Symbol = outdated_preference(),
 )
     s = as_store(store)
-    values = [read_value(s, n) for n in names]
+    values = [retrieve_value(s, n) for n in names]
     check_reads(s, names, script, check_on_outdated(on_outdated))
     return values
 end
 
-function read_value(s::Store, name::Symbol)
+"The stored value of `name`, outside a build: its kind comes from the store alone."
+retrieve_value(s::Store, name::Symbol) = stored_value(s, name, stored_kind(s, name))
+
+# The kind of value stored under `name`, from the store alone (see `stored_value`).
+function stored_kind(s::Store, name::Symbol)
     record = read_meta(s, name)
-    (record !== nothing && record.format == "file") && return file_value(record)
-    # a branching target has records but no object of its own: its value is its branches
-    (record !== nothing && !has_object(s, name)) && return load_branches(s, name)
-    return read_object(s, name)
+    record === nothing && return :object
+    record.format == "file" && return :file
+    # a branching target has a record but no object of its own: its value is its branches
+    return has_object(s, name) ? :object : :branches
 end
 
 const ON_OUTDATED = (:warn, :error, :ignore)
@@ -115,16 +119,26 @@ function outdated_reads(s::Store, names::Vector{Symbol}, script)
     )
 end
 
-function pipeline_outdated(p::Pipeline, s::Store, names::Vector{Symbol}, root::AbstractString)
+function pipeline_outdated(
+    p::Pipeline,
+    s::Store,
+    names::Vector{Symbol},
+    root::AbstractString,
+)
     isempty(names) && return Tuple{Symbol, Symbol}[]
     return Tuple{Symbol, Symbol}[
-        (r.name, r.reason) for r in tar_outdated(p; names, store = s, root) if r.name in names
+        (r.name, r.reason)
+        for r in tar_outdated(p; names, store = s, root)
+        if r.name in names
     ]
 end
 
 # Without the pipeline, only a missing build record (an invalidated target) shows.
-store_outdated(s::Store, names) =
-    Tuple{Symbol, Symbol}[(n, :missing) for n in names if read_meta(s, n) === nothing]
+store_outdated(s::Store, names) = Tuple{Symbol, Symbol}[
+    (n, :missing)
+    for n in names
+    if read_meta(s, n) === nothing
+]
 
 function check_reads(s::Store, names::Vector{Symbol}, script, on_outdated::Symbol)
     on_outdated === :ignore && return nothing

@@ -96,17 +96,33 @@ function log!(ctx::BuildContext, message::AbstractString)
     return nothing
 end
 
-"The stored value of a finished target: its object, or for a file target its path(s)."
-function load_value(ctx::BuildContext, name::Symbol)
-    t = get_target(ctx.pipeline, name)
-    t.format == :file && return file_value(read_meta(ctx.store, name)::Record)
-    t.pattern === nothing || return load_branches(ctx.store, name)
-    return read_object(ctx.store, name)
+"""
+    stored_value(store, name, kind)
+
+The stored value of a finished target of `kind`: `:file` gives its path(s),
+`:branches` the vector of its branch values, `:object` its object.
+"""
+function stored_value(s::Store, name::Symbol, kind::Symbol)
+    kind === :file && return file_value(read_meta(s, name)::Record)
+    kind === :branches && return load_branches(s, name)
+    return read_object(s, name)
 end
+
+"The kind of value a target stores, from its definition (see [`stored_value`](@ref))."
+value_kind(t::Target) = t.format == :file ?
+    :file :
+    t.pattern === nothing ? :object : :branches
+
+"The stored value of a finished target during a build: its kind comes from the pipeline."
+retrieve_value(ctx::BuildContext, name::Symbol) = stored_value(
+    ctx.store,
+    name,
+    value_kind(get_target(ctx.pipeline, name)),
+)
 
 "Value of a finished target, loaded from the store on first use."
 get_value!(ctx::BuildContext, name::Symbol) = get!(
-    () -> load_value(ctx, name),
+    () -> retrieve_value(ctx, name),
     ctx.values,
     name,
 )
