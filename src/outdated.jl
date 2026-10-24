@@ -8,7 +8,10 @@ that applies wins, so the reason is meaningful in logs and in `tar_outdated()`.
 `dep_hashes` maps each upstream name to its current value hash, and `seed` is
 the recorded form of the seed it would run with ([`seed_string`](@ref)).
 
-Reasons, in order: `:forced`, `:always`, `:no_source`, `:missing`, `:errored`,
+`now` is the clock for `cue_age` (a parameter so tests can set it).
+
+Reasons, in order: `:forced`, `:always`, `:condition`, `:no_source`, `:missing`,
+`:errored`, `:expired`,
 `:julia_version_changed`, `:command_changed`, `:seed_changed`, `:format_changed`,
 `:code_changed`, `:deps_changed`,
 `:upstream_changed`, `:file_changed`, `:url_changed`. File targets are re-checked on every call
@@ -27,9 +30,11 @@ function outdated_reason(
     forced::Bool = false,
     root::Union{Nothing, AbstractString} = nothing,
     key = t.name,
+    now::Dates.DateTime = Dates.now(Dates.UTC),
 )
     forced && return :forced
     t.cue == :always && return :always
+    t.cue isa ForceCue && t.cue.condition && return :condition
     cmd.hash === nothing && return :no_source
     record = read_meta(store, key)
     stored = if t.format == :url
@@ -49,17 +54,23 @@ function outdated_reason(
     t.cue == :never && stored && return nothing
     (record === nothing || !stored) && return :missing
     isempty(record.error) || return :errored
+    expired(t.cue, record.built_at, now) && return :expired
     record.hash_source == "lowered" &&
         record.julia_version != string(VERSION) &&
         return :julia_version_changed
-    record.command_hash == cmd.hash || return :command_changed
-    record.seed == seed || return :seed_changed
-    same_format(record, t) || return :format_changed
-    record.code_hash == code || return :code_changed
-    Set(keys(record.dep_hashes)) == Set(string.(t.deps)) || return :deps_changed
-    for d in t.deps
-        record.dep_hashes[string(d)] == dep_hashes[d] || return :upstream_changed
+    if checks(t.cue, :command)
+        record.command_hash == cmd.hash || return :command_changed
+        record.seed == seed || return :seed_changed
     end
+    same_format(record, t) || return :format_changed
+    checks(t.cue, :code) && record.code_hash != code && return :code_changed
+    if checks(t.cue, :depend)
+        Set(keys(record.dep_hashes)) == Set(string.(t.deps)) || return :deps_changed
+        for d in t.deps
+            record.dep_hashes[string(d)] == dep_hashes[d] || return :upstream_changed
+        end
+    end
+    checks(t.cue, :file) || return nothing
     if t.format == :url
         url_state(record).value_hash == record.value_hash || return :url_changed
     elseif t.format == :file

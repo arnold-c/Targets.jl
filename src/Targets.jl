@@ -27,6 +27,9 @@ include("testing.jl")
 include("formats.jl")
 export StorageFormat, ArrowFormat, ParquetFormat, CSVFormat
 
+include("cues.jl")
+export CueRule, Cue, cue_age, cue_force
+
 include("patterns.jl")
 export Pattern, Map, Cross, Head, Slice, Sample
 

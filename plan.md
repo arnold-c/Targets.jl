@@ -723,6 +723,8 @@ read_value(::JLD2Format, path) = JLD2.load(path, "value")
 
 `tar_outdated` uses the same rules. Tests cover each reason and the injected clock.
 
+*Status: implemented in `src/cues.jl` (`cue_age`, `cue_force`, `Cue`), with the checks in `outdated_reason` (`now` keyword for the clock). `:condition` comes right after `:always`. `Cue(command = false)` also ignores seed changes, since a seed belongs to the command. Format changes are always checked. `tar_manifest` shows the cue value as it is, disabled rules included.*
+
 ### Phase 17: Progress monitoring
 
 With parallel and distributed builds, `progress.log` alone is not enough to see what is running.

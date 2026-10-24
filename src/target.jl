@@ -15,7 +15,7 @@ struct Target
     deps::Vector{Symbol}
     format::Union{Symbol, StorageFormat}
     pattern::Union{Nothing, Symbol, Pattern}
-    cue::Symbol
+    cue::Union{Symbol, CueRule}
     source::Union{Nothing, Expr}
     group::Union{Nothing, Symbol}
     seed::Union{Nothing, Symbol, Int}
@@ -74,7 +74,7 @@ function target(
     deps::Union{Nothing, AbstractVector{Symbol}} = nothing,
     format::Union{Symbol, StorageFormat} = :jld2,
     pattern::Union{Nothing, Symbol, Pattern} = nothing,
-    cue::Symbol = :thorough,
+    cue::Union{Symbol, CueRule} = :thorough,
     source::Union{Nothing, Expr} = nothing,
     seed::Union{Nothing, Symbol, Integer} = :auto,
     slots::Union{Symbol, Integer} = 1,
@@ -85,8 +85,10 @@ function target(
 )
     validate_name(name)
     format in (:file, :url) || resolve_format(format)
-    cue in CUES ||
-        throw(ArgumentError("target `$name`: cue must be one of $CUES, got `$cue`"))
+    (cue isa CueRule || cue in CUES) ||
+        throw(ArgumentError(
+            "target `$name`: cue must be one of $CUES or a cue value (cue_age, cue_force, Cue), got `$cue`",
+        ))
     dependencies = deps === nothing ?
         arg_names(f, name) :
         check_explicit_deps(f, name, collect(deps))
