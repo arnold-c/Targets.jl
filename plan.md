@@ -682,6 +682,8 @@ read_value(::JLD2Format, path) = JLD2.load(path, "value")
 
 **14.3 Batched replication (`tar_rep`, `tar_map_rep`).** Thousands of tiny branches cost a TOML record, an object file and hashing each. `tar_rep(name, f; batches, reps)` creates a branching target over `1:batches` whose branch runs `f()` `reps` times, seeding each rep from the Phase 10 seed plus the rep index, and returns the vector of reps; consumers receive all reps concatenated. `tar_map_rep` combines this with `tar_map`. Before building it, benchmark the per-branch overhead of a 10 000-branch target; if metadata writes dominate, batching the branch records of one target into a single file is the alternative fix.
 
+*Status: implemented in `src/replicate.jl`. Benchmark (2000 branches, one thread): a full build took about 2.5 ms per branch (JLD2 object writes about 0.5 ms, TOML records about 0.15 ms, the rest scheduling, logging and hashing), and an up-to-date run about 0.5 ms per branch. Record writes do not dominate, so batching reps is the fix. `tar_rep(name, f; batches, reps)` returns three targets: `name_batch` (`1:batches`), `name_batches` (branching, one vector of reps per batch) and `name`, which concatenates them for consumers. That costs one extra copy of the results; a target-level "concatenate branches" option could remove it later. Each rep is seeded from the branch seed plus its index. `tar_map_rep(name, f, values; ...)` passes each value as `f`'s first argument, and the value is captured in the command hash.*
+
 ### Phase 15: Error modes, retries and debugging failed targets
 
 **15.1 Per-target error modes.** `target(...; error = :stop)`, one of:
