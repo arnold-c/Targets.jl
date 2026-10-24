@@ -143,10 +143,10 @@ function persist_value(job::Job, value)
     path = write_object(job.store, job.key, value; format = resolve_format(t.format))
     stored = (;)
     if job.pattern_use !== nothing && t.pattern === nothing
-        value isa AbstractVector ||
+        has_branch_elements(value) ||
             error(
                 "target `$(t.name)` is the pattern of `$(job.pattern_use)`, so it must return a vector, " *
-                    "not a `$(typeof(value))`",
+                    "not a `$(typeof(value))` (or define `Targets.branch_elements` for it)",
             )
         stored = (; element_hashes = element_hashes(value), elements_recorded = true)
     end

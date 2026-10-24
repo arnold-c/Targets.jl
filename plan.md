@@ -678,6 +678,8 @@ read_value(::JLD2Format, path) = JLD2.load(path, "value")
 
 **14.2 Grouped iteration.** Branch over groups of a table without the user building a vector first. Add a hook `Targets.branch_elements(x)` (default: `x` itself for an `AbstractVector`, error otherwise), and a DataFrames extension mapping a `GroupedDataFrame` to its groups. Identity of a group: its group key plus a content hash of the group's columns, rather than the Serialization fallback of `canonical_hash`. Settle in implementation whether branches receive a `SubDataFrame` or a copy (a copy is safer for storage).
 
+*Status: implemented. Hooks: `Targets.branch_elements(x)` and `Targets.element_hashes(x)`; the `TargetsDataFramesExt` extension gives each branch a `DataFrame` copy of its group, identified by the group key plus a canonical hash of its columns.*
+
 **14.3 Batched replication (`tar_rep`, `tar_map_rep`).** Thousands of tiny branches cost a TOML record, an object file and hashing each. `tar_rep(name, f; batches, reps)` creates a branching target over `1:batches` whose branch runs `f()` `reps` times, seeding each rep from the Phase 10 seed plus the rep index, and returns the vector of reps; consumers receive all reps concatenated. `tar_map_rep` combines this with `tar_map`. Before building it, benchmark the per-branch overhead of a 10 000-branch target; if metadata writes dominate, batching the branch records of one target into a single file is the alternative fix.
 
 ### Phase 15: Error modes, retries and debugging failed targets

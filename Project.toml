@@ -21,18 +21,21 @@ TestItems = "1c621080-faea-4a02-84b6-bbd5e436b8fe"
 [weakdeps]
 Arrow = "69666777-d1a9-59fb-9406-91d4454c9d45"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 Parquet2 = "98572fba-bba0-415d-956f-fa77e587d26d"
 
 [extensions]
 TargetsArrowExt = "Arrow"
 TargetsCSVExt = "CSV"
+TargetsDataFramesExt = "DataFrames"
 TargetsMakieExt = "Makie"
 TargetsParquet2Ext = "Parquet2"
 
 [compat]
 Arrow = "2"
 CSV = "0.10, 1"
+DataFrames = "1"
 CodeTracking = "3.0.2"
 Dates = "1"
 Downloads = "1"

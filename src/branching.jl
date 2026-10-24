@@ -29,7 +29,30 @@ function disambiguate(hashes::Vector{String})
     end
 end
 
-"Identity hashes of the elements of a pattern vector."
+"""
+    Targets.branch_elements(x)
+
+Extension point: the elements a branching target maps over when its pattern
+target's value is `x`. The default accepts an `AbstractVector`; the DataFrames
+extension maps a `GroupedDataFrame` to (copies of) its groups.
+"""
+branch_elements(x::AbstractVector) = x
+branch_elements(x) = error(
+    "a pattern target must return a vector (or a value with a `Targets.branch_elements` method), not a `$(typeof(x))`",
+)
+
+"Whether `x` can be a pattern value: it has a `branch_elements` method beyond the fallback."
+has_branch_elements(x) = which(branch_elements, Tuple{typeof(x)}).sig !==
+    Tuple{typeof(branch_elements), Any}
+
+"""
+    Targets.element_hashes(x)
+
+Identity hashes of the elements of pattern value `x` (one per element of
+[`branch_elements`](@ref), unique). Extension point for values whose elements
+deserve a better identity than their canonical hash.
+"""
+element_hashes(x) = element_hashes(branch_elements(x))
 element_hashes(values::AbstractVector) = disambiguate(
     String[canonical_hash(v) for v in values]
 )
@@ -82,7 +105,7 @@ function pattern_elements(ctx::BuildContext, up::Target, t::Target)
         record.element_hashes
     else
         # built before it was a pattern: work the hashes out now, and keep them
-        hs = element_hashes(get_value!(ctx, up.name))
+        hs = element_hashes(get_value!(ctx, up.name))::Vector{String}
         write_meta(
             ctx.store,
             up.name,
@@ -117,7 +140,7 @@ end
 function pick_value(ctx::BuildContext, pick::Pick)
     up = get_target(ctx.pipeline, pick.name)
     up.pattern === nothing || return read_object(ctx.store, "$(up.name)/$(pick.element.id)")
-    return get_value!(ctx, up.name)[pick.index]
+    return branch_elements(get_value!(ctx, up.name))[pick.index]
 end
 
 # What a branch receives for dependency `d`: its element(s) if `d` is in the pattern.
@@ -320,6 +343,27 @@ end
         target(:summary, fits -> sum(fits)),
     )
     """
+end
+
+@testitem "branching over a GroupedDataFrame runs once per group" setup = [
+    SourceFixtures,
+] begin
+    using DataFrames
+    code(rows::Vector{String}) = """
+    using DataFrames
+    p = tar_pipeline(
+        target(:groups, () -> groupby(DataFrame(g = $(repr(rows)), x = 1:$(length(rows))), :g)),
+        target(:totals, groups -> (groups.g[1], sum(groups.x)); pattern = :groups),
+    )
+    """
+    mktempdir() do dir
+        s = build_source(code(["a", "b", "a"]), dir)
+        @test length(s.branches[:totals]) == 2
+        @test only(read_values(dir, :totals)) == [("a", 4), ("b", 2)]
+        s = build_source(code(["a", "b", "a", "c"]), dir)
+        @test length(s.branches[:totals]) == 1 # only the new group
+        @test only(read_values(dir, :totals))[3] == ("c", 4)
+    end
 end
 
 @testitem "branch ids come from element hashes and survive reordering" begin
