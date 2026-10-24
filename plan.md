@@ -521,7 +521,21 @@ Each target, and each branch, runs with an RNG seeded from its own name, so its 
 
 ### Phase 11: Ready-queue scheduler and concurrent builds
 
-`tar_make(; jobs = n)` runs up to `n` independent targets and branches at once, as Julia tasks. Default `jobs = 1` keeps today's behavior.
+`tar_make(; jobs = n)` runs up to `n` independent targets and branches at once, as Julia tasks. Default `jobs = 1` keeps today's behavior. A target can claim several of the `n` slots, or all of them (`slots = :all`) so that nothing else runs while it does.
+
+**Decision: tasks in one process first; worker processes are a second executor (Phase 12), not a replacement.** Both run completely independent targets at the same time; they differ in what they share.
+
+| | Tasks in the `tar_make` process (Phase 11) | Worker processes (Phase 12) |
+| --- | --- | --- |
+| Start-up | None | Each worker starts Julia, loads packages and `_targets.jl`, and compiles the target code again |
+| Passing values | Cached values are passed directly, in memory | Through the store on disk (a shared filesystem) |
+| Memory | One copy of each upstream value | Each worker loads its own copy |
+| Garbage collection | Shared: allocation-heavy targets pause each other, so they scale worse than compute-bound ones | Independent per process |
+| Code that is unsafe to run concurrently, global state (`cd`, `ENV`, BLAS threads) | Shared; needs `deployment = :main` or care | Isolated per process |
+| A crash (segfault, out of memory) | Ends the whole build | Loses one worker |
+| Scale | One machine | Several machines (cluster managers) |
+
+Tasks are the right default on a laptop or a single node, and cheapest for many small branches. Workers are worth their start-up cost for long targets that allocate heavily, use libraries that are unsafe to run concurrently, risk crashing, or need more than one machine. Both executors use the same `Job`/`JobResult` protocol and the same slot accounting (11.3), so a pipeline needs no changes to switch between them, and a worker process can itself use threads inside its targets.
 
 **Decision: the package parallelises across targets and branches; parallelism within a target belongs to the target's own code.** Only `tar_make` owns the loop over targets and over the branches of a branching target (`process_branching!`), so only the package can run independent targets or branches concurrently. For simulation sweeps written as dynamic branches, that is where most of the speed-up is. A single large computation (one model fit) should parallelise itself with `Threads.@spawn`, OhMyThreads.jl or threaded BLAS. Both levels compose, because they share Julia's task scheduler: a target spawning tasks while `tar_make` runs other targets neither deadlocks nor serialises. The same job/result split is also what Phase 12 needs for distributed workers, which target code cannot easily set up itself.
 
@@ -549,19 +563,27 @@ With `jobs = 1`, execute runs inline in the scheduler task; the logs and summari
 
 ```julia
 results = Channel{JobResult}(Inf)
-in_flight = 0
-while !isempty(ready) || in_flight > 0
-    while in_flight < jobs && (job = next_job!(ready)) !== nothing
+used = 0                                             # slots taken by running jobs
+while !isempty(ready) || used > 0
+    while (job = peek_job(ready)) !== nothing && used + job.slots <= jobs
+        pop_job!(ready)
+        used += job.slots
         Threads.@spawn put!(results, execute(job))   # the task returns its own result
-        in_flight += 1
     end
-    commit!(ctx, take!(results))                     # scheduler task only
-    in_flight -= 1
+    result = take!(results)
+    used -= result.slots
+    commit!(ctx, result)                             # scheduler task only
 end
 ```
 
-The `Channel` is the only object shared between tasks, and it is thread-safe; `in_flight`, `ready` and the whole `BuildContext` are local to the scheduler task. `execute` returning a `JobResult` for every outcome is what keeps `take!` from waiting forever. `jobs` counts tasks, not threads: `jobs = 4` with one thread still overlaps I/O-bound targets, and `jobs` larger than the number of threads is allowed.
+The `Channel` is the only object shared between tasks, and it is thread-safe; `used`, `ready` and the whole `BuildContext` are local to the scheduler task. `execute` returning a `JobResult` for every outcome is what keeps `take!` from waiting forever. `jobs` counts tasks, not threads: `jobs = 4` with one thread still overlaps I/O-bound targets, and `jobs` larger than the number of threads is allowed.
 
+- **Slots and exclusive targets.** `target(...; slots = 1)` is the share of the `jobs` capacity a target occupies while it runs: an `Integer` (clamped to `jobs`), or `:all`, which equals `jobs`. A job starts only when its slots are free, so a `slots = :all` target waits for the running jobs to finish and nothing else starts until it is done: use it for a target that parallelises internally and should have the machine to itself. When nothing is running, any job fits, so the loop cannot deadlock.
+  - **No overtaking.** Ready jobs are taken strictly in priority order: when the next job does not fit, the scheduler waits for running jobs to finish instead of starting smaller jobs behind it. Otherwise a stream of small branches could delay an exclusive target indefinitely. This leaves slots idle while draining, which is the price of the guarantee.
+  - **`tar_slots()`** returns the slots granted to the running target (a `ScopedValue`, like `tar_seed()`), so target code can size its own parallelism, e.g. `OhMyThreads.tmap(f, xs; ntasks = tar_slots())`.
+  - **Admission, not enforcement.** Julia cannot confine a task to a number of threads: a `slots = 1` target that spawns many tasks still uses every thread. Slots only control what `tar_make` starts alongside it; document this.
+  - **Branches.** Slots apply to each branch job, so `slots = :all` on a branching target runs its branches one at a time, each with the machine to itself.
+  - Slots are independent of `deployment = :main`, and recorded in `tar_manifest()`.
 - **Branches are jobs.** Most of the available parallelism is in branching targets, so each outdated branch is its own job; the parent's aggregate record is committed when its last branch job finishes (the bookkeeping now in `process_branching!` moves into a per-target pending-branch counter).
 - **`deployment = :main` per target** runs that target inline in the scheduler task (the task that called `tar_make`), so it never runs at the same time as another `:main` target. Default `:spawn`. This is for code that is not safe to run concurrently with itself. It is *not* a promise of a particular thread: libraries that need thread 1 (PythonCall, some GUI backends) are satisfied only when `tar_make` itself is called from thread 1; document this rather than pinning by `threadid()`. Code that is unsafe alongside *any* concurrent use of a library needs every target using that library marked `:main`.
 - **Errors.** Without `keep_going`, stop dispatching new jobs after the first failure, wait for running jobs and commit their results (finished work is never thrown away), then rethrow. With `keep_going`, block descendants as today. On `InterruptException`, stop dispatching and commit nothing further; running tasks cannot be killed, so wait for them (with a second Ctrl-C abandoning them uncommitted). Document this.
@@ -578,6 +600,7 @@ The `Channel` is the only object shared between tasks, and it is thread-safe; `i
   - `deployment = :main` runs in the caller's `current_task()`, and two `:main` targets never overlap (each records entry and exit in a log owned by the test).
   - A failure lets running jobs commit; an exception inside `execute` cannot hang the scheduler.
   - `check_mutation = true` catches a target that `push!`es onto its input.
+  - Slots: with `jobs = 4`, a `slots = :all` target never overlaps another job (entry and exit logs), starts only after the jobs running before it finish, and is not overtaken by smaller ready branches; `tar_slots()` returns 4 inside it and 1 in a default target; a `slots = 2` target overlaps at most two single-slot targets.
   - A guard test item that `src/` contains no `threadid(` or `@threads`.
 
 ### Phase 12: Distributed and HPC workers
@@ -587,7 +610,8 @@ Once Phase 11 has a job/result protocol, add a second executor that sends jobs t
 - **Executor interface.** `tar_make(; executor = TaskExecutor(n))` with `submit!(exec, job)` and `take_result!(exec)`, generalising the `Threads.@spawn`/`Channel` loop of 11.3; `jobs = n` stays as shorthand for `TaskExecutor(n)`. `DistributedExecutor(pids)` lives in a package extension on `Distributed`.
 - **Do not ship functions.** Closures and anonymous functions do not serialize reliably between processes. Each worker loads `_targets.jl` once with `load_pipeline` and looks targets up by name; a job carries only the key, element index, seed and argument store keys. On start-up, each worker reports the command and code hashes of its pipeline, and the run aborts if they differ from the main process's (a worker running other code would record wrong hashes).
 - **Data through the store.** Workers read dependencies from the store and write their own objects; only value hashes and record fields go back to the main process, which alone writes metadata. This requires the project root and store on a shared filesystem; check it at start-up by having each worker read a token file the main process wrote.
-- **Resources.** `resources = (; threads = 4, memory = "8G")` per target is recorded now and used only to pick a worker pool (`executor = Dict(:default => ..., :bigmem => ...)` with `resources = (; pool = :bigmem)`). One cluster job per target is out of scope.
+- **Slots across workers.** A `DistributedExecutor` has one slot per worker process by default (`slots_per_worker` to change it), and the 11.3 accounting is unchanged: `slots = :all` drains every worker and runs the target alone on one of them, where it can use that worker's threads.
+- **Pools.** For clusters where draining everything is wasteful, `pool = :bigmem` per target sends it to a named executor (`executor = Dict(:default => ..., :bigmem => ...)`), and slots are counted per pool, so a heavy target can have a dedicated pool while other targets keep running on the default one. One cluster job per target is out of scope.
 - **Fresh builds.** `fresh = true` makes the subprocess the main process; workers attach to it.
 - **Tests.** `addprocs(2)` locally: same results and records as a task-based build; a worker whose pipeline differs is rejected; Phase 10 seeds agree across executors.
 
@@ -690,7 +714,7 @@ With parallel and distributed builds, `progress.log` alone is not enough to see 
 | Milestone | Contents | Gate |
 | --- | --- | --- |
 | **M6: Seeds and scheduler** | Phase 10; Phase 11.1–11.2 (structural) | Seed tests; with one worker, order, logs and summaries are identical to v0.1.0; oracle test |
-| **M7: Concurrent jobs** | Phase 11.3 | Concurrency, failure and mutation tests; oracle and seed tests with `jobs = 4` on one and on four threads; no `threadid` guard test |
+| **M7: Concurrent jobs** | Phase 11.3 | Concurrency, failure, mutation and slot tests; oracle and seed tests with `jobs = 4` on one and on four threads; no `threadid` guard test |
 | **M8: Formats** | Phase 13 | Round-trip and stability per format; `:format_changed`; JET and Aqua with the new extensions |
 | **M9: Patterns** | Phase 14 | Combinator, grouping and `tar_rep` scenarios; branch overhead benchmark recorded |
 | **M10: Errors and debugging** | Phase 15 | Error-mode, retry and workspace scenarios |
