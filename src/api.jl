@@ -63,8 +63,9 @@ end
     stored_target_names(s, names)
 
 `names` with each [`tar_map`](@ref) group name replaced by its targets, using the
-groups recorded by the last `tar_make`.
+groups recorded by the last `tar_make`; `nothing` means every stored target.
 """
+stored_target_names(s::Store, ::Nothing) = stored_names(s)
 function stored_target_names(s::Store, names)
     groups = stored_groups(s)
     return unique(reduce(
@@ -75,19 +76,29 @@ function stored_target_names(s::Store, names)
 end
 
 """
-    tar_invalidate(; names, store = default_store_path())
+    tar_invalidate(; names = nothing, store = default_store_path(), ask = true,
+                   input = stdin, io = stdout)
 
 Delete the metadata of the targets in `names` (a vector of symbols, or one symbol)
 so that they rebuild on the next run. Their stored objects stay, so `tar_read`
 keeps working in the meantime. A [`tar_map`](@ref) group name (as of the last
 `tar_make`) stands for all of its targets; a single generated name affects only
 that one, and the next `tar_make` rebuilds only it and what depends on it.
+
+Without `names`, every stored target is invalidated, so the whole pipeline
+rebuilds; this asks for confirmation first unless `ask = false`.
 """
 function tar_invalidate(;
-    names::Union{Symbol, AbstractVector{Symbol}},
+    names::Union{Nothing, Symbol, AbstractVector{Symbol}} = nothing,
     store::Union{Store, AbstractString} = default_store_path(),
+    ask::Bool = true,
+    input::IO = stdin,
+    io::IO = stdout,
 )
     s = as_store(store)
+    (names === nothing && ask) &&
+        !confirm("Invalidate every target in $(s.root), so the whole pipeline rebuilds?"; input, io) &&
+        return nothing
     for name in stored_target_names(s, names)
         delete_meta(s, name)
         rm(joinpath(s.root, "meta", string(name)); recursive = true, force = true)
@@ -158,14 +169,16 @@ function tar_destroy(;
         error(
             "$(s.root) does not look like a Targets store (no store.toml); not deleting it",
         )
-    if ask
-        print(io, "Delete the store at $(s.root)? [y/N] ")
-        flush(io)
-        answer = lowercase(strip(readline(input)))
-        answer in ("y", "yes") || return false
-    end
+    (!ask || confirm("Delete the store at $(s.root)?"; input, io)) || return false
     rm(s.root; recursive = true)
     return true
+end
+
+"Ask a yes/no `question` on `io`; true only for an answer of y or yes on `input`."
+function confirm(question::AbstractString; input::IO, io::IO)
+    print(io, question, " [y/N] ")
+    flush(io)
+    return lowercase(strip(readline(input))) in ("y", "yes")
 end
 
 @testmodule StoreFixtures begin
@@ -273,6 +286,24 @@ end
         @test !has_object(s, :summary_low) && !has_object(s, :summary_high)
         @test has_object(s, :shifted_low)
         @test build_source(code, dir).built == [:summary_low, :summary_high]
+    end
+end
+
+@testitem "tar_invalidate without names invalidates the whole pipeline" setup = [
+    StoreFixtures,
+] begin
+    using Targets: open_store, meta_keys
+    mktempdir() do dir
+        p, store = built_store(dir)
+        tar_invalidate(; store, input = IOBuffer("n\n"), io = devnull)
+        @test !isempty(meta_keys(open_store(store)))
+        tar_invalidate(; names = :x, store, input = IOBuffer(), io = devnull) # never asks
+        tar_invalidate(; store, input = IOBuffer("y\n"), io = devnull)
+        @test isempty(meta_keys(open_store(store)))
+        @test tar_read(:z; store) == 3
+        @test tar_make(p; store, root = dir, io = devnull).built == [:x, :y, :z]
+        tar_invalidate(; store, ask = false)
+        @test isempty(meta_keys(open_store(store)))
     end
 end
 

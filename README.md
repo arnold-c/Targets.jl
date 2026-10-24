@@ -153,7 +153,7 @@ explanation rather than record the wrong hashes. Load Revise, restart, or use
 | `tar_read(:name)` / `@tar_load a b` | Read stored values |
 | `tar_outdated()` | Targets that would rebuild, with reasons (conservative) |
 | `tar_manifest()` / `tar_meta()` | Target table / stored metadata table |
-| `tar_invalidate(names = [:a])` | Forget a target's metadata so it rebuilds; keep its object |
+| `tar_invalidate(names = [:a])` | Forget a target's metadata so it rebuilds; keep its object. `tar_invalidate()` does this for every target, after asking (`ask = false` skips the question) |
 | `tar_delete(names = [:a])` | Delete a target's object and metadata |
 | `tar_prune()` | Delete stored targets no longer in the pipeline |
 | `tar_destroy()` | Delete the whole store (asks first) |
