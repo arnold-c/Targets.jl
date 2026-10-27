@@ -16,6 +16,12 @@ combine_hashes(hashes) = bytes2hex(SHA.sha256(
     join(sort!(collect(String, hashes)), "\n")::String,
 ))
 
+# Types are written with their module path relative to Base, not to Main: how a
+# type prints in Main depends on what the session happens to have loaded (for
+# example a package exporting a name that clashes with one of ours), and the
+# hash must be the same in every process.
+type_string(T) = sprint(show, T; context = :module => Base)
+
 function write_tagged(io::IO, tag::Char, payload::AbstractString)
     write(io, UInt8(tag))
     write(io, string(ncodeunits(payload)), UInt8(':'), payload)
@@ -26,17 +32,21 @@ write_count(io::IO, tag::Char, n::Integer) = (write(io, UInt8(tag), string(n), U
 write_canonical(io::IO, ::Nothing) = write(io, UInt8('N'))
 write_canonical(io::IO, ::Missing) = write(io, UInt8('m'))
 write_canonical(io::IO, x::Bool) = write(io, UInt8('B'), x ? UInt8('1') : UInt8('0'))
-write_canonical(io::IO, x::Integer) = write_tagged(io, 'I', string(typeof(x), ":", x))
+write_canonical(io::IO, x::Integer) = write_tagged(
+    io,
+    'I',
+    string(type_string(typeof(x)), ":", x),
+)
 write_canonical(io::IO, x::AbstractFloat) = write_tagged(
     io,
     'F',
-    string(typeof(x), ":", bitstring(x)),
+    string(type_string(typeof(x)), ":", bitstring(x)),
 )
 write_canonical(io::IO, x::AbstractString) = write_tagged(io, 'S', String(x))
 write_canonical(io::IO, x::Symbol) = write_tagged(io, 'Y', String(x))
 write_canonical(io::IO, x::Char) = write_tagged(io, 'C', string(UInt32(x)))
 write_canonical(io::IO, x::Module) = write_tagged(io, 'O', string(x))
-write_canonical(io::IO, x::Type) = write_tagged(io, 'K', string(x))
+write_canonical(io::IO, x::Type) = write_tagged(io, 'K', type_string(x))
 write_canonical(io::IO, x::GlobalRef) = write_tagged(io, 'G', string(x.mod, ".", x.name))
 write_canonical(io::IO, x::QuoteNode) = (
     write(io, UInt8('Q'));
@@ -57,7 +67,7 @@ write_canonical(io::IO, x::NamedTuple) = (
 )
 write_canonical(io::IO, x::Pair) = write_each(io, 'P', (x.first, x.second))
 write_canonical(io::IO, x::AbstractArray) = (
-    write_tagged(io, 'A', string(eltype(x), size(x)));
+    write_tagged(io, 'A', string(type_string(eltype(x)), size(x)));
     write_each(io, 'a', x)
 )
 
@@ -89,9 +99,9 @@ write_canonical(io::IO, ::LineNumberNode) = nothing
 # Serialization, which is not guaranteed stable across Julia versions.
 function write_canonical(io::IO, x::T) where {T}
     if x isa Function && Base.issingletontype(T)
-        write_tagged(io, 'U', string(T))
+        write_tagged(io, 'U', type_string(T))
     elseif isstructtype(T) && !ismutabletype(T)
-        write_tagged(io, 'R', string(T))
+        write_tagged(io, 'R', type_string(T))
         write_each(io, 'r', (getfield(x, i) for i in 1:nfields(x)), nfields(x))
     else
         @warn "hashing a value of type $T with Serialization, which is not stable across Julia versions" _id = Symbol(
@@ -101,6 +111,14 @@ function write_canonical(io::IO, x::T) where {T}
         Serialization.serialize(buf, x)
         write_tagged(io, 'Z', String(take!(buf)))
     end
+end
+
+@testitem "types are encoded independently of what Main has loaded" begin
+    using Targets: type_string
+    @test type_string(Targets.Cross) == "Targets.Cross" # even after `using Targets`
+    @test type_string(Int) == "Int64"
+    @test type_string(Vector{Union{Symbol, Targets.Pattern}}) ==
+        "Vector{Union{Symbol, Targets.Pattern}}"
 end
 
 @testitem "canonical hash distinguishes values and ignores ordering of unordered collections" begin

@@ -179,8 +179,8 @@ function type_hash(T::DataType)
         nameof(T),
         nameof(supertype(T)),
         collect(fieldnames(T)),
-        [string(ft) for ft in T.types],
-        [string(p) for p in T.parameters],
+        [type_string(ft) for ft in T.types],
+        [p isa Type ? type_string(p) : string(p) for p in T.parameters],
         ismutabletype(T),
         isabstracttype(T),
     ))

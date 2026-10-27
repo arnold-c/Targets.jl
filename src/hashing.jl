@@ -23,7 +23,7 @@ end
 # A closure is an object whose fields are its captured variables. Captured
 # functions are followed by recursive discovery, so only their type is recorded.
 captured_value(x::Core.Box) = captured_value(x.contents)
-captured_value(x::Function) = string(typeof(x))
+captured_value(x::Function) = type_string(typeof(x))
 captured_value(x) = x
 
 function closure_captures(f)
