@@ -153,9 +153,19 @@ line. Several expressions are returned when definitions are ambiguous (for
 example two lambdas with the same arguments on one line): hashing all of them is
 conservative, so editing any of them rebuilds, but nothing stale is kept.
 """
+# Where a method is defined. Revise (through CodeTracking) keeps named methods'
+# lines current after edits, but it cannot map anonymous functions and closures
+# (gensym'd names starting with `#`) and warns about each one, so those use the
+# location Julia recorded.
+function method_location(m::Method)
+    startswith(string(m.name), '#') || return CodeTracking.whereis(m)
+    file = Base.fixup_stdlib_path(string(m.file))
+    return isabspath(file) ? (file, Int(m.line)) : nothing
+end
+
 function method_source(m::Method)
     loc = try
-        CodeTracking.whereis(m)
+        method_location(m)
     catch
         nothing
     end

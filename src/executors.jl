@@ -182,7 +182,8 @@ function run_remote(
         Store(store_root),
         root,
     )
-    r = cd(() -> execute_granted(job, slots), root)
+    # the worker loaded the script after this function was compiled
+    r = cd(() -> Base.invokelatest(execute_granted, job, slots), root)
     failed(r) ||
         return RemoteResult(r.value_hash, r.stored, r.seconds, nothing, String[], r.retried)
     return RemoteResult(

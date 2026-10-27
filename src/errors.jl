@@ -52,7 +52,11 @@ end
 
 ## Capturing warnings
 
-"Passes every log record on to `parent`, keeping the messages of warnings and errors."
+"""
+Keeps the messages of warnings and errors, and passes records on to `parent` as
+it would have handled them. Warnings are kept even when `parent` would drop
+them, so silencing the console does not silence the record.
+"""
 struct WarningCollector <: Logging.AbstractLogger
     parent::Logging.AbstractLogger
     messages::Vector{String}
@@ -60,13 +64,38 @@ struct WarningCollector <: Logging.AbstractLogger
 end
 WarningCollector(parent) = WarningCollector(parent, String[], ReentrantLock())
 
-Logging.min_enabled_level(l::WarningCollector) = Logging.min_enabled_level(l.parent)
-Logging.shouldlog(l::WarningCollector, args...) = Logging.shouldlog(l.parent, args...)
+Logging.min_enabled_level(l::WarningCollector) = min(
+    Logging.min_enabled_level(l.parent),
+    Logging.Warn,
+)
+Logging.shouldlog(l::WarningCollector, level, args...) = level >= Logging.Warn ||
+    Logging.shouldlog(l.parent, level, args...)
 Logging.catch_exceptions(l::WarningCollector) = Logging.catch_exceptions(l.parent)
-function Logging.handle_message(l::WarningCollector, level, message, args...; kwargs...)
+function Logging.handle_message(
+    l::WarningCollector,
+    level,
+    message,
+    _module,
+    group,
+    id,
+    args...;
+    kwargs...,
+)
     level >= Logging.Warn &&
         lock(() -> push!(l.messages, first(string(message), 500)), l.lock)
-    return Logging.handle_message(l.parent, level, message, args...; kwargs...)
+    parent_wants = level >= Logging.min_enabled_level(l.parent) &&
+        Logging.shouldlog(l.parent, level, _module, group, id)
+    parent_wants || return nothing
+    return Logging.handle_message(
+        l.parent,
+        level,
+        message,
+        _module,
+        group,
+        id,
+        args...;
+        kwargs...,
+    )
 end
 
 "Call `f()` and return its result with the warnings it logged (also from tasks it spawns)."
@@ -298,6 +327,18 @@ end
         @test any(f -> occursin("inner", f), tb) && any(f -> occursin("outer", f), tb)
         @test !any(f -> occursin("call_target", f) || occursin("execute", f), tb)
         @test only(tar_errored(; store)).name == "bad"
+    end
+end
+
+@testitem "warnings are recorded even when the console logger drops them" begin
+    using Logging
+    mktempdir() do dir
+        store = joinpath(dir, "_targets")
+        p = tar_pipeline(target(:w, () -> (@warn "quiet"; 1)))
+        with_logger(NullLogger()) do
+            tar_make(p; store, root = dir, io = devnull)
+        end
+        @test Targets.read_meta(Targets.open_store(store), :w).warnings == ["quiet"]
     end
 end
 

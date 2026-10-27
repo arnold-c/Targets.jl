@@ -243,7 +243,14 @@ interrupt, running jobs are waited for (interrupt again to abandon them).
 errors, naming the target and argument, if a target modified its input. It is
 costly, so it is off by default; turn it on in tests and CI.
 """
-function tar_make(
+tar_make(p::Pipeline; kwargs...) = Base.invokelatest(build_pipeline, p; kwargs...)
+
+# The build itself. `tar_make` enters it in the latest world: a pipeline script
+# (or code it includes) is usually loaded after the caller was compiled, and the
+# build touches user bindings and types outside the target calls too (printing
+# stack frames and errors, saving values), which in an older world is a
+# world-age violation from Julia 1.12 on.
+function build_pipeline(
     p::Pipeline;
     names = nothing,
     force::Bool = false,

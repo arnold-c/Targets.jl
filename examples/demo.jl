@@ -37,6 +37,7 @@ if Base.identify_package("Targets") === nothing
     Pkg.develop(; path = dirname(@__DIR__), io = devnull)
 end
 using Targets
+using Logging: Logging, ConsoleLogger, with_logger
 
 demo_dir() = joinpath(@__DIR__, ".demo")
 demo_store(dir = demo_dir()) = joinpath(dir, "_targets")
@@ -368,13 +369,17 @@ function write_features(
     return dir
 end
 
-features_make(dir; kwargs...) = tar_make(;
-    script = demo_script(dir),
-    store = demo_store(dir),
-    root = dir,
-    io = devnull,
-    kwargs...,
-)
+# `noisy` warns on purpose; the warning is still recorded in its metadata (checked
+# below), so keep it off the console.
+features_make(dir; kwargs...) = with_logger(ConsoleLogger(stderr, Logging.Error)) do
+    tar_make(;
+        script = demo_script(dir),
+        store = demo_store(dir),
+        root = dir,
+        io = devnull,
+        kwargs...,
+    )
+end
 
 features_outdated(dir) = tar_outdated(;
     script = demo_script(dir),
@@ -395,7 +400,7 @@ function features_walkthrough(dir = mktempdir(); distributed = false)
         println(
             cond ? "  \u2713 " : "  \u2717 ",
             label,
-            isempty(detail) ? "" : ": " * detail,
+            (cond || isempty(detail)) ? "" : ": " * detail, # details only on failure
         )
         push!(results, cond)
         return cond
