@@ -1,4 +1,5 @@
 Manifest*.toml
 .pi/
 examples/.demo/
+examples/.demo-features/
 examples/.version_check/

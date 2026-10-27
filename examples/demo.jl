@@ -24,9 +24,48 @@
 #   julia> tar_make()
 #
 # Other knobs of `write_demo`: note (comment only), data (input file), grid (branching),
-# discount (a helper two calls deep), shifts (static branching). `walkthrough()` runs a fixed sequence of edits in a
-# temporary directory and checks each step rebuilds exactly what it should, and
-# `features_walkthrough()` does the same for the v0.2 features (see the end of this file):
+# discount (a helper two calls deep), shifts (static branching).
+#
+# The v0.2 features (seeds, concurrent jobs, formats, patterns, tar_rep, error modes,
+# retries, workspaces, cues, progress, executors) have a second project in
+# `examples/.demo-features/` (also git-ignored). Create it once:
+#
+#   julia --project=. -e 'include("examples/demo.jl"); features_setup()'
+#
+# Start Julia with threads, so concurrent targets really run in parallel (`jobs`
+# also works on one thread, but then tasks only interleave):
+#
+#   cd examples/.demo-features
+#   julia --project=. -t 4
+#   julia> using Targets, CairoMakie
+#   julia> tar_make(; jobs = 4)       # `maybe` fails (error = :null), one branch of
+#                                     # `fragile_fits` is trimmed, `flaky` is retried
+#   julia> tar_read(:uses_maybe), tar_read(:fragile_fits), tar_read(:exclusive)
+#   julia> tar_errored()              # what failed, and why
+#   julia> tar_traceback(:maybe)
+#   julia> tar_workspace(:maybe)      # the arguments of the failed call
+#   julia> tar_rerun(:maybe)          # rerun it here, with the same seed
+#   julia> tar_meta()                 # look for `warnings` in the `noisy` row
+#   julia> tar_progress()             # the last run's events, also during a build
+#   julia> tar_visnetwork()
+#
+# Then fix the failures and edit things:
+#
+#   julia> rm("fail_10"); rm("fail_maybe")
+#   julia> tar_make(; jobs = 4)       # only the failed parts rebuild
+#   julia> include("../demo.jl")
+#   julia> write_features(; seed = 1)                   # :seed_changed
+#   julia> write_features(; seed = 1, total = "sum(xs) + 0")  # Cue(code = false): nothing
+#   julia> write_features(; seed = 1, fast_format = :jld2)    # :format_changed
+#   julia> tar_outdated(); tar_make(; jobs = 4, check_mutation = true)
+#
+# Or on worker processes, from the same REPL:
+#
+#   julia> using Distributed; addprocs(2; exeflags = "--project=$(Base.active_project())")
+#   julia> tar_make(; executor = DistributedExecutor(workers()), force = true)
+#
+# `walkthrough()` and `features_walkthrough()` run fixed sequences of these edits in
+# temporary directories and check that each step rebuilds exactly what it should:
 #
 #   julia --project=. -t 4 examples/demo.jl [--distributed]
 
@@ -137,27 +176,36 @@ Targets developed into it, ready to `activate` and `tar_make()`.
 """
 function demo_setup(dir::AbstractString = demo_dir())
     write_demo(dir; makie = true)
-    # Always (re)resolve: the Manifest records Targets' dependencies and extensions,
-    # which go stale whenever the package's Project.toml changes.
-    let
-        previous = Base.active_project()
-        try
-            Pkg.activate(dir; io = devnull)
-            isfile(joinpath(dir, "Manifest.toml")) ?
-                Pkg.resolve() :
-                Pkg.develop(; path = dirname(@__DIR__))
-            Pkg.add("CairoMakie")
-        finally
-            previous === nothing ?
-                Pkg.activate(; io = devnull) :
-                Pkg.activate(previous; io = devnull)
-        end
-    end
+    setup_environment(dir, ["CairoMakie"])
     println("Demo project ready in ", dir)
     println("  cd(\"", relpath(dir), "\"); then start julia with --project=. and run:")
     println("  using Targets, CairoMakie")
     println("  tar_make()")
     println("  tar_visnetwork()")
+    return dir
+end
+
+"""
+    setup_environment(dir, packages)
+
+Give `dir` its own environment with this repository's Targets developed into it,
+plus `packages`.
+"""
+function setup_environment(dir::AbstractString, packages)
+    previous = Base.active_project()
+    try
+        Pkg.activate(dir; io = devnull)
+        # Always (re)resolve: the Manifest records Targets' dependencies and
+        # extensions, which go stale whenever the package's Project.toml changes.
+        isfile(joinpath(dir, "Manifest.toml")) ?
+            Pkg.resolve() :
+            Pkg.develop(; path = dirname(@__DIR__))
+        Pkg.add(packages)
+    finally
+        previous === nothing ?
+            Pkg.activate(; io = devnull) :
+            Pkg.activate(previous; io = devnull)
+    end
     return dir
 end
 
@@ -286,8 +334,11 @@ end
 ##
 ## (URL targets need a server, so they are not part of it; see `format = :url`.)
 
+features_dir() = joinpath(@__DIR__, ".demo-features")
+
 """
-    write_features(dir; seed = 0, noise = 1.0, total = "sum(xs)", fast_format = :jls)
+    write_features(dir = features_dir(); seed = 0, noise = 1.0, total = "sum(xs)",
+                   fast_format = :jls, makie = uses_makie(dir))
 
 Write the v0.2 feature project into `dir`. Each keyword changes one thing:
 
@@ -295,17 +346,19 @@ Write the v0.2 feature project into `dir`. Each keyword changes one thing:
 - `noise`: a `const` reached by the seeded `draws` target
 - `total`: the body of a helper used by `cached_total`, whose cue ignores code edits
 - `fast_format`: the storage format of `fast` (`:format_changed` when it changes)
+- `makie`: add `using CairoMakie` to `_targets.jl` (for `tar_visnetwork`); kept on regeneration
 
 Targets fail while marker files exist: `fail_10` fails one branch of
 `fragile_fits` (`error = :trim`), `fail_maybe` fails `maybe` (`error = :null`).
 `flaky` fails on its first attempt in each fresh project and succeeds on retry.
 """
 function write_features(
-    dir::AbstractString;
+    dir::AbstractString = features_dir();
     seed = 0,
     noise = 1.0,
     total = "sum(xs)",
     fast_format = :jls,
+    makie = uses_makie(dir),
 )
     mkpath(dir)
     write(
@@ -336,7 +389,7 @@ function write_features(
         joinpath(dir, "_targets.jl"),
         """
         using Targets
-        Base.include(@__MODULE__, joinpath(@__DIR__, "features.jl"))
+        $(makie ? "using CairoMakie\n" : "")Base.include(@__MODULE__, joinpath(@__DIR__, "features.jl"))
 
         tar_pipeline(
             target(:mus, () -> [0.0, 10.0, 20.0]),
@@ -366,6 +419,25 @@ function write_features(
         )
         """,
     )
+    return dir
+end
+
+"""
+    features_setup(dir = features_dir())
+
+Write the v0.2 feature project, with the marker files that make two targets
+fail, and give it its own environment (Targets, CairoMakie and Distributed),
+ready to `activate` and `tar_make(; jobs = 4)`.
+"""
+function features_setup(dir::AbstractString = features_dir())
+    write_features(dir; makie = true)
+    touch(joinpath(dir, "fail_10"))
+    touch(joinpath(dir, "fail_maybe"))
+    setup_environment(dir, ["CairoMakie", "Distributed"])
+    println("Feature project ready in ", dir)
+    println("  cd(\"", relpath(dir), "\"); then start julia with --project=. -t 4 and run:")
+    println("  using Targets, CairoMakie")
+    println("  tar_make(; jobs = 4)")
     return dir
 end
 
