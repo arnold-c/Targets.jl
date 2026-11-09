@@ -160,7 +160,7 @@ explanation rather than record the wrong hashes. Load Revise, restart, or use
 | `tar_prune()` | Delete stored targets no longer in the pipeline |
 | `tar_destroy()` | Delete the whole store (asks first) |
 | `tar_dot(; names, descendants)` | Graphviz DOT, optionally for a sub-graph; renders as SVG in notebooks if Graphviz is installed, `write("p.dot", tar_dot())` saves it |
-| `tar_visnetwork(; names, descendants, interactive)` | Plot (needs a Makie backend, e.g. `using CairoMakie`); with GLMakie (a window) or WGLMakie (a browser tab) active it is interactive by default: drag targets (shift-click or shift-drag to select several and move them together), pan and zoom, and hide targets by kind or status, hide the selection or show only the selection, from the side panel (`interactive = false` for a static figure) |
+| `tar_visnetwork(; names, descendants, interactive)` | Plot (needs a Makie backend, e.g. `using CairoMakie`); with GLMakie (a window) or WGLMakie (a browser tab) active it is interactive by default: drag targets (shift-click or shift-drag to select several and move them together), pan and zoom, and hide targets by kind or status, hide the selection, show only the selection, or show everything upstream or downstream of it, from the side panel (`interactive = false` for a static figure) |
 
 ## Practical notes
 

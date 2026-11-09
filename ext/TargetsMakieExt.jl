@@ -23,6 +23,7 @@ using Makie:
     Point2f,
     RGBAf,
     Rect2d,
+    Toggle,
     arrows2d!,
     current_backend,
     deregister_interaction!,
@@ -57,12 +58,10 @@ const STROKE_COLOR = to_color(:gray30)
 const LABEL_COLOR = to_color(:black)
 
 const HELP = """
-    Drag a target to move it
-    (moves all selected targets
-    when it is selected)
+    Drag a target to move it (with
+    the selection, if it is selected)
     Drag the background to pan
-    Click: select a target
-    Shift-click: add or remove
+    Click, shift-click: select
     Shift-drag: select an area
     Scroll: zoom, ctrl-click: reset"""
 
@@ -71,14 +70,17 @@ const HELP = """
 
 The Observables a network is drawn from. `positions` are the node positions;
 `hidden` marks targets hidden by hand and `hidden_kinds` the sections and
-statuses hidden as a whole, which together give `visible`. `selected` marks the
-selected targets, and `box` is the area being selected while `boxing`.
+statuses hidden as a whole; `revealed` marks targets shown regardless (the
+dependencies or descendants of a selection). Together they give `visible`.
+`selected` marks the selected targets, and `box` is the area being selected
+while `boxing`.
 """
 struct NetworkState
     data::NetworkData
     positions::Observable{Vector{Point2f}}
     hidden::Observable{Vector{Bool}}
     hidden_kinds::Observable{Set{Symbol}}
+    revealed::Observable{Vector{Bool}}
     visible::Observable{Vector{Bool}}
     selected::Observable{Vector{Bool}}
     box::Observable{Rect2d}
@@ -89,8 +91,9 @@ function NetworkState(data::NetworkData)
     n = length(data.nodes)
     hidden = Observable(fill(false, n))
     hidden_kinds = Observable(Set{Symbol}())
-    visible = lift(hidden, hidden_kinds) do hidden, kinds
-        Bool[!hidden[i] && !any(in(kinds), kinds_of(data, i)) for i in 1:n]
+    revealed = Observable(fill(false, n))
+    visible = lift(hidden, hidden_kinds, revealed) do hidden, kinds, revealed
+        Bool[revealed[i] || (!hidden[i] && !any(in(kinds), kinds_of(data, i))) for i in 1:n]
     end
     selected = Observable(fill(false, n))
     # hidden targets leave the selection, so they cannot be moved or hidden unseen
@@ -102,6 +105,7 @@ function NetworkState(data::NetworkData)
         Observable([Point2f(p...) for p in data.positions]),
         hidden,
         hidden_kinds,
+        revealed,
         visible,
         selected,
         Observable(Rect2d(0, 0, 0, 0)),
@@ -113,6 +117,30 @@ end
 kinds_of(data::NetworkData, i) = data.statuses === nothing ?
     (data.sections[i],) :
     (data.sections[i], data.statuses[i])
+
+"""
+    reachable(edges, from, direction)
+
+The nodes reachable from the nodes marked in `from` along `edges` (pairs
+`(dependency, dependent)`), not counting `from` itself unless reached again:
+their dependencies, recursively, for `direction = :upstream`, or the targets
+that depend on them for `:downstream`.
+"""
+function reachable(edges, from::AbstractVector{Bool}, direction::Symbol)
+    step(i, j) = direction === :upstream ? (j, i) : (i, j) # (from, to) along the walk
+    reached = fill(false, length(from))
+    queue = findall(from)
+    while !isempty(queue)
+        k = popfirst!(queue)
+        for (i, j) in edges
+            a, b = step(i, j)
+            (a == k && !reached[b]) || continue
+            reached[b] = true
+            push!(queue, b)
+        end
+    end
+    return reached
+end
 
 "`colors`, with those of hidden nodes made transparent."
 shown_colors(colors, visible) = [v ? c : CLEAR for (c, v) in zip(colors, visible)]
@@ -341,8 +369,9 @@ end
 
 A panel at `position` with a checkbox per section and per status present
 (unchecking one hides those targets), "Hide selected" and "Show only selected"
-buttons, a "Show all" button that undoes all hiding, and a summary of the mouse
-controls.
+buttons, switches that show the dependencies or descendants of the selection
+(see [`reveal_toggle!`](@ref)), a "Show all" button that undoes all hiding, and
+a summary of the mouse controls.
 """
 function add_panel!(position, state::NetworkState)
     data = state.data
@@ -373,13 +402,20 @@ function add_panel!(position, state::NetworkState)
         end
     end
 
+    heading!("Selected targets")
     hide = Button(panel[next_row!(), 1:3]; label = "Hide selected", halign = :left)
     on(_ -> hide_selected!(state), hide.clicks)
     only = Button(panel[next_row!(), 1:3]; label = "Show only selected", halign = :left)
     on(_ -> show_only_selected!(state), only.clicks)
+    reveals = Dict{Symbol, Vector{Bool}}()
+    toggles = [
+        reveal_toggle!(panel, next_row!(), state, reveals, :upstream, "Show dependencies"),
+        reveal_toggle!(panel, next_row!(), state, reveals, :downstream, "Show descendants"),
+    ]
     show = Button(panel[next_row!(), 1:3]; label = "Show all", halign = :left)
     on(show.clicks) do _
         foreach(c -> c.checked[] = true, checkboxes)
+        foreach(t -> t.active[] = false, toggles)
         state.hidden[] = fill(false, length(data.nodes))
     end
     Label(
@@ -403,6 +439,30 @@ function kind_checkbox!(panel, row, state::NetworkState, kind::Symbol, label)
         state.hidden_kinds[] = kinds
     end
     return checkbox
+end
+
+"""
+    reveal_toggle!(panel, row, state, reveals, direction, label)
+
+A switch that, when turned on, shows every target reachable from the selection
+in `direction` (`:upstream` for dependencies, `:downstream` for descendants),
+however it was hidden, and hides them again when turned off. The targets shown
+are those of the selection at the moment it is turned on, so selecting other
+targets afterwards (e.g. to move them) keeps them shown. `reveals` holds what
+each switch shows, so that the switches combine.
+"""
+function reveal_toggle!(panel, row, state::NetworkState, reveals, direction, label)
+    n = length(state.data.nodes)
+    reveals[direction] = fill(false, n)
+    toggle = Toggle(panel[row, 1:2]; halign = :left, length = 24, markersize = 12)
+    Label(panel[row, 3], label; halign = :left)
+    on(toggle.active) do active
+        reveals[direction] = active ?
+            reachable(state.data.edges, state.selected[], direction) :
+            fill(false, n)
+        state.revealed[] = reduce(.|, values(reveals))
+    end
+    return toggle
 end
 
 function hide_selected!(state::NetworkState)

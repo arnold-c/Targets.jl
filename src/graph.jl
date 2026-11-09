@@ -316,7 +316,10 @@ be rearranged there:
 A side panel hides targets: uncheck a kind (constants, input files,
 computations, output files) or a status (up to date, outdated, ...) to hide
 those targets, use "Hide selected" to hide the selection or "Show only selected"
-to hide everything else, and "Show all" to undo all hiding. Edges to hidden
+to hide everything else, switch on "Show dependencies" or "Show descendants" to
+show everything upstream or downstream of the selection (however it was hidden;
+the targets shown are fixed when the switch goes on, so other targets can then
+be selected and moved), and "Show all" to undo all hiding. Edges to hidden
 targets are hidden too.
 
 By default (`interactive = nothing`) the figure is interactive exactly when
@@ -710,6 +713,61 @@ end
     # without statuses, only the kinds have checkboxes
     plain = interactive_diamond()
     @test count(c -> c isa Makie.Checkbox, plain.fig.content) == 2
+end
+
+@testitem "interactive network figures show the dependencies and descendants of a selection" setup = [
+    MouseFixtures,
+] begin
+    using Makie
+    (; data, fig, ax, state, at) = interactive_diamond()
+    shown() = data.nodes[state.visible[]]
+    px(name) = figure_px(ax, at(name))
+    constants, computations = filter(c -> c isa Makie.Checkbox, fig.content)
+    _, only_selected, show = filter(c -> c isa Makie.Button, fig.content)
+    dependencies, descendants = filter(c -> c isa Makie.Toggle, fig.content)
+
+    # dependencies and descendants are followed recursively
+    reachable = Base.get_extension(Targets, :TargetsMakieExt).reachable
+    marked(names...) = [n in names for n in data.nodes]
+    @test data.nodes[reachable(data.edges, marked(:both), :upstream)] ==
+        [:raw, :left, :right]
+    @test data.nodes[reachable(data.edges, marked(:raw), :downstream)] ==
+        [:left, :right, :both]
+    @test !any(reachable(data.edges, marked(:other), :upstream))
+
+    click!(fig, px(:left))
+    only_selected.clicks[] += 1
+    @test shown() == [:left]
+    dependencies.active[] = true
+    @test shown() == [:raw, :left]
+    descendants.active[] = true
+    @test shown() == [:raw, :left, :both]
+
+    # what is shown stays while other targets are selected, e.g. to move them
+    click!(fig, px(:raw))
+    @test data.nodes[state.selected[]] == [:raw]
+    @test shown() == [:raw, :left, :both]
+
+    # switching off hides them again (and they leave the selection)
+    dependencies.active[] = false
+    @test shown() == [:left, :both]
+    @test !any(state.selected[])
+
+    # shown targets stay shown when their kind is hidden
+    computations.checked[] = false
+    @test shown() == [:both]
+
+    # Show all switches them off too
+    show.clicks[] += 1
+    @test shown() == data.nodes
+    @test !dependencies.active[] && !descendants.active[]
+
+    # with nothing selected, a switch shows nothing extra
+    click!(fig, px(:left))
+    only_selected.clicks[] += 1
+    click!(fig, figure_px(ax, Point2f(ax.finallimits[].origin) + Point2f(0.05, 0.05)))
+    dependencies.active[] = true
+    @test shown() == [:left]
 end
 
 @testitem "tar_dot returns a DotGraph that prints its DOT text" setup = [
