@@ -505,6 +505,65 @@ function check_reports(targets)
     end
 end
 
+## Inside a notebook
+
+"""
+    notebook_options()
+
+The options of the Quarto notebook this code runs in, from the `julia`
+engine's `QuartoNotebookWorker.notebook_options()`, or `nothing` outside a
+notebook.
+"""
+function notebook_options()
+    isdefined(Main, :QuartoNotebookWorker) || return nothing
+    worker = getfield(Main, :QuartoNotebookWorker)
+    (worker isa Module && isdefined(worker, :notebook_options)) || return nothing
+    options = try
+        Base.invokelatest(getfield(worker, :notebook_options))
+    catch e
+        e isa InterruptException && rethrow()
+        return nothing
+    end
+    return options isa AbstractDict ? options : nothing
+end
+
+"The value of document metadata `key` in notebook `options` (`nothing` if unset)."
+function notebook_value(options::AbstractDict, key::AbstractString)
+    format = get(options, "format", nothing)
+    metadata = format isa AbstractDict ? get(format, "metadata", nothing) : nothing
+    metadata isa AbstractDict && haskey(metadata, key) && return metadata[key]
+    return get(options, key, nothing)
+end
+notebook_value(::Nothing, key::AbstractString) = nothing
+
+"The directory of the notebook being run: its document's, or the working directory."
+function notebook_dir()
+    path = Base.source_path(nothing)
+    (path !== nothing && endswith(lowercase(path), ".qmd")) && return dirname(path)
+    return pwd()
+end
+
+"""
+    notebook_store(options = notebook_options(), dir = nothing)
+
+The store named by the notebook's `targets-store` metadata, relative to `dir`
+(by default the notebook's directory):
+the store of the `tar_make` rendering it (which passes an absolute path), else
+the document's front matter. `nothing` outside a notebook or without one.
+"""
+function notebook_store(options = notebook_options(), dir = nothing)
+    value = notebook_value(options, "targets-store")
+    value isa AbstractString || return nothing
+    return normpath(joinpath(something(dir, notebook_dir()), expanduser(value)))
+end
+
+"Whether the notebook is being rendered by `tar_make` (see [`tar_quarto`](@ref))."
+rendered_by_make(options = notebook_options()) = notebook_value(
+    options,
+    "targets-rendering",
+) ===
+    true
+
 @testitem "quarto_text keeps executable Julia cells, inline code and prose" begin
     using Targets: quarto_text
     doc = """
@@ -759,6 +818,52 @@ end
     @test report_hash() == report_hash()
     @test report_hash().kind == :source
     @test report_hash() != report_hash("; quarto_args = [\"--to\", \"pdf\"]")
+end
+
+@testitem "notebooks find their store in their metadata" begin
+    using Targets: notebook_store, notebook_options, rendered_by_make, default_store_path
+    @test notebook_options() === nothing # not in a notebook
+    @test notebook_store() === nothing
+    @test !rendered_by_make()
+    meta(pairs...) = Dict{String, Any}("format" => Dict{String, Any}("metadata" => Dict{
+        String,
+        Any,
+    }(pairs...)))
+    dir = joinpath("project", "reports")
+    @test notebook_store(meta(), dir) === nothing
+    @test notebook_store(meta("targets-store" => "../_targets"), dir) ==
+        normpath(joinpath("project", "_targets"))
+    absolute = abspath(joinpath("elsewhere", "_targets"))
+    @test notebook_store(meta("targets-store" => absolute), dir) == absolute
+    @test notebook_store(Dict{String, Any}("targets-store" => "s"), dir) ==
+        joinpath(dir, "s")
+    @test rendered_by_make(meta("targets-rendering" => true))
+    @test !rendered_by_make(meta("targets-store" => "x"))
+end
+
+@testitem "the store preference sets the default store" begin
+    using Targets: default_store_path, project_root
+    @test default_store_path() == joinpath(project_root(), "_targets")
+    mktempdir() do dir
+        write(
+            joinpath(dir, "Project.toml"),
+            "[deps]\nTargets = \"ccd79084-dcf1-4aa0-8fea-6744ff5e7af6\"\n",
+        )
+        prefs(store) = write(
+            joinpath(dir, "LocalPreferences.toml"),
+            "[Targets]\nstore = $(repr(store))\n",
+        )
+        pushfirst!(LOAD_PATH, dir)
+        try
+            prefs(joinpath(dir, "store"))
+            @test default_store_path() == joinpath(dir, "store")
+            prefs("../shared/_targets")
+            @test default_store_path() ==
+                normpath(joinpath(project_root(), "..", "shared", "_targets"))
+        finally
+            popfirst!(LOAD_PATH)
+        end
+    end
 end
 
 @testitem "a real Quarto render (skipped without Quarto)" setup = [SourceFixtures] begin

@@ -26,7 +26,29 @@ end
 as_store(store::Store) = store
 as_store(store::AbstractString) = Store(abspath(String(store)))
 
-default_store_path() = joinpath(project_root(), "_targets")
+"""
+    default_store_path()
+
+The store used when none is given. In a Quarto notebook, the store named by
+the document's `targets-store` metadata: the store of the `tar_make` that is
+rendering it, else a `targets-store:` key in its front matter (relative to the
+document). Otherwise the `store` preference of Targets (relative to the project
+root), else `_targets` in the project root.
+"""
+default_store_path() = something(
+    notebook_store(),
+    preferred_store(),
+    joinpath(project_root(), "_targets"),
+)
+
+"The `store` preference of Targets (e.g. in `LocalPreferences.toml`), relative to the project root, or `nothing`."
+function preferred_store()
+    path = Preferences.load_preference(@__MODULE__, "store", nothing)
+    path === nothing && return nothing
+    path isa AbstractString ||
+        error("the `store` preference of Targets must be a path, got `$(repr(path))`")
+    return normpath(joinpath(project_root(), expanduser(path)))
+end
 
 """
     open_store(root = default_store_path())

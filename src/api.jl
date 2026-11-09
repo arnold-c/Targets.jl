@@ -1,6 +1,6 @@
 """
     tar_read(name; store = default_store_path(), script = nothing,
-             on_outdated = outdated_preference())
+             on_outdated = default_on_outdated())
 
 The stored value of target `name`. For a file target this is its path (or vector
 of paths), relative to the project root; for a branching target it is the vector
@@ -20,6 +20,17 @@ When reading the project's own store, the check is [`tar_outdated`](@ref) on the
 project's `_targets.jl` (or on `script`), so code edits count. Otherwise, and for
 targets no longer in the pipeline, only an invalidated target (one with no
 build record) counts as outdated.
+
+Without `store`, the store is `_targets` in the project root, or the path in
+the `store` preference of Targets (relative to the project root). In a Quarto
+notebook (the `julia` engine) rendered by [`tar_quarto`](@ref) during
+`tar_make`, it is the store that build uses, and the check is skipped since
+the build has just updated what the document reads. A notebook rendered by
+hand can name its store in its front matter, relative to the document:
+
+```yaml
+targets-store: ../_targets
+```
 """
 tar_read(name::Symbol; kwargs...) = only(read_targets([name]; kwargs...))
 
@@ -59,7 +70,7 @@ function read_targets(
     names::Vector{Symbol};
     store::Union{Store, AbstractString} = default_store_path(),
     script::Union{Nothing, AbstractString} = nothing,
-    on_outdated::Symbol = outdated_preference(),
+    on_outdated::Symbol = default_on_outdated(),
 )
     s = as_store(store)
     values = [retrieve_value(s, n) for n in names]
@@ -92,6 +103,9 @@ outdated_preference() = check_on_outdated(Symbol(Preferences.load_preference(
     "on_outdated",
     "warn",
 )))
+
+"The `on_outdated` of a read without one: `:ignore` in a notebook `tar_make` is rendering, else the preference."
+default_on_outdated() = rendered_by_make() ? :ignore : outdated_preference()
 
 check_on_outdated(mode::Symbol) = mode in ON_OUTDATED ?
     mode :
