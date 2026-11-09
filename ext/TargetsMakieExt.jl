@@ -164,14 +164,20 @@ function pan!(ax::Axis, event::MouseEvent)
     return nothing
 end
 
-function Targets.open_interactive(fig::Figure)
+"The name of the active Makie backend, or `:none`."
+function backend_name()
     backend = current_backend()
-    name = backend isa Module ? nameof(backend) : :none
-    name in INTERACTIVE_BACKENDS ||
+    return backend isa Module ? nameof(backend) : :none
+end
+
+Targets.interactive_backend() = backend_name() in INTERACTIVE_BACKENDS
+
+function Targets.open_interactive(fig::Figure)
+    Targets.interactive_backend() ||
         error(
             "tar_visnetwork(; interactive = true) needs an interactive Makie backend, but the " *
-                "active one is $name: load `GLMakie` (opens a window) or `WGLMakie` (opens a " *
-                "browser tab), or activate one that is loaded, e.g. `GLMakie.activate!()`",
+                "active one is $(backend_name()): load `GLMakie` (opens a window) or `WGLMakie` " *
+                "(opens a browser tab), or activate one that is loaded, e.g. `GLMakie.activate!()`",
         )
     display(fig)
     return fig

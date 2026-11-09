@@ -268,19 +268,30 @@ explain how to load one. Defined by TargetsMakieExt.
 function open_interactive end
 
 """
+    interactive_backend() -> Bool
+
+Whether the active Makie backend can show an interactive figure (GLMakie or
+WGLMakie). Defined by TargetsMakieExt.
+"""
+function interactive_backend end
+
+"""
     tar_visnetwork(p::Pipeline; names = nothing, descendants = false, status = true,
                    store = default_store_path(), root = nothing, figure_size = (900, 500),
-                   interactive = false)
+                   interactive = nothing)
 
 Plot the pipeline with the same layout, colours and subgraph selection as
 [`tar_dot`](@ref), returning a Makie `Figure`. Needs a Makie backend
 (`using CairoMakie`, `GLMakie` or `WGLMakie`). File targets are squares, branching
 targets show their branch count, and colours show status.
 
-`interactive = true` opens the figure in a window (GLMakie) or a browser tab
-(WGLMakie), where it can be rearranged: drag a target to move it (its edges and
-label follow), drag the background or use the right mouse button to pan, scroll
-to zoom, and ctrl-click to reset the view.
+An interactive figure opens in a window (GLMakie) or a browser tab (WGLMakie),
+where it can be rearranged: drag a target to move it (its edges and label
+follow), drag the background or use the right mouse button to pan, scroll to
+zoom, and ctrl-click to reset the view. By default (`interactive = nothing`) the
+figure is interactive exactly when GLMakie or WGLMakie is the active backend.
+`interactive = false` always gives a static figure, and `interactive = true`
+errors under any other backend.
 """
 function tar_visnetwork(
     p::Pipeline;
@@ -290,7 +301,7 @@ function tar_visnetwork(
     store::Union{Store, AbstractString} = default_store_path(),
     root::Union{Nothing, AbstractString} = nothing,
     figure_size = (900, 500),
-    interactive::Bool = false,
+    interactive::Union{Nothing, Bool} = nothing,
 )
     haskey(Base.loaded_modules, MAKIE_ID) ||
         error(
@@ -303,6 +314,7 @@ function tar_visnetwork(
                 "Targets is `dev`ed by path): run `import Pkg; Pkg.resolve()` and restart Julia.",
         )
     data = network_data(p; names, descendants, status, store, root)
+    interactive = something(interactive, interactive_backend())
     fig, _ = network_figure(data; figure_size, interactive)
     return interactive ? open_interactive(fig) : fig
 end
@@ -424,17 +436,31 @@ end
         Makie.Figure
 end
 
-@testitem "tar_visnetwork asks for an interactive backend when interactive" setup = [
+@testitem "tar_visnetwork is interactive by default only with GLMakie or WGLMakie" setup = [
     GraphFixtures,
 ] begin
     using Makie
-    if !(Makie.current_backend() isa Module)
-        # a shared process may have activated one
+    using Targets: interactive_backend
+    previous = Makie.CURRENT_BACKEND[]
+    try
+        # stand-ins named like backends: only the name decides
+        for (name, expected) in ((:GLMakie, true), (:WGLMakie, true), (:CairoMakie, false))
+            Makie.CURRENT_BACKEND[] = Module(name)
+            @test interactive_backend() == expected
+        end
+
+        Makie.CURRENT_BACKEND[] = missing
+        @test !interactive_backend()
+        fig = tar_visnetwork(diamond(); status = false) # static by default
+        ax = only(filter(c -> c isa Makie.Axis, fig.content))
+        @test haskey(ax.interactions, :rectanglezoom)
         @test_throws "interactive Makie backend" tar_visnetwork(
             diamond();
             status = false,
             interactive = true,
         )
+    finally
+        Makie.CURRENT_BACKEND[] = previous
     end
 end
 

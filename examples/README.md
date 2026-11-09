@@ -61,8 +61,8 @@ julia> tar_make()          # "up to date" for everything
 julia> tar_read(:report)   # (n = 3, total = 33.6)
 julia> tar_outdated()      # empty
 julia> print(tar_dot())    # Graphviz DOT of the DAG
-julia> tar_visnetwork()    # the DAG as a Makie figure, coloured by status
-julia> tar_visnetwork(; interactive = true)  # GLMakie or WGLMakie: drag targets, pan, zoom
+julia> tar_visnetwork()    # the DAG as a Makie figure, coloured by status; with
+                           # GLMakie or WGLMakie, drag targets, pan and zoom
 ```
 
 Pick the backend in the REPL: `_targets.jl` loads none, because loading a
@@ -191,7 +191,7 @@ Look around:
 | `tar_rerun(:maybe)` | throws `no value today` again, in your session, with the same seed |
 | `tar_meta()` | the `noisy` row has `warnings = ["only 3 values"]` |
 | `tar_progress()` | the last run's events, one row per target and branch |
-| `tar_visnetwork()` | the DAG; `maybe` and `fragile_fits` coloured as errored (`interactive = true` with GLMakie or WGLMakie to rearrange it) |
+| `tar_visnetwork()` | the DAG; `maybe` and `fragile_fits` coloured as errored (rearrange it with GLMakie or WGLMakie) |
 
 ### Fix the failures
 

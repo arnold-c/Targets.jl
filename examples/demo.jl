@@ -14,8 +14,8 @@
 #   julia> tar_outdated()
 #   julia> tar_read(:report)
 #   julia> print(tar_dot())
-#   julia> tar_visnetwork()           # needs one of the Makie backends above
-#   julia> tar_visnetwork(; interactive = true)  # GLMakie or WGLMakie: drag, pan, zoom
+#   julia> tar_visnetwork()           # needs one of the Makie backends above; with
+#                                     # GLMakie or WGLMakie: drag targets, pan, zoom
 #
 # To try an edit, regenerate the files with one change (from that same REPL):
 #
@@ -48,7 +48,7 @@
 #   julia> tar_rerun(:maybe)          # rerun it here, with the same seed
 #   julia> tar_meta()                 # look for `warnings` in the `noisy` row
 #   julia> tar_progress()             # the last run's events, also during a build
-#   julia> tar_visnetwork(; interactive = true)
+#   julia> tar_visnetwork()
 #
 # Then fix the failures and edit things:
 #
@@ -105,9 +105,9 @@ end
 
 function print_plotting_help()
     println("  Plot with any Makie backend (all three are installed):")
-    println("  using CairoMakie; tar_visnetwork()                    # a static figure")
-    println("  using GLMakie; tar_visnetwork(; interactive = true)   # a window")
-    println("  using WGLMakie; tar_visnetwork(; interactive = true)  # a browser tab")
+    println("  using CairoMakie; tar_visnetwork()   # a static figure")
+    println("  using GLMakie; tar_visnetwork()      # an interactive window")
+    println("  using WGLMakie; tar_visnetwork()     # an interactive browser tab")
     return nothing
 end
 
