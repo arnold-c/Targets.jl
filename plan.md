@@ -65,6 +65,7 @@ Keep the package as a handful of small, separately testable files, each owning o
 | `src/branching.jl` | Dynamic branching (`pattern = ...`) |
 | `src/api.jl` | `tar_read`, `@tar_load`, `tar_meta`, `tar_invalidate`, `tar_delete`, `tar_prune`, `tar_destroy`, `tar_manifest` |
 | `src/graph.jl` | Layered layout and `tar_dot()` |
+| `src/list.jl` | `tar_list()`: target names by section and connected component |
 | `src/testing.jl` | `@testmodule` fixtures shared by scenario tests (throwaway projects) |
 | `src/macros.jl` | `@pipeline` / `@target` sugar (last phase) |
 | `ext/TargetsMakieExt.jl` | `tar_visnetwork()` drawing with plain Makie primitives, loaded when any Makie backend is |
@@ -329,6 +330,7 @@ Once the core works, the helpers are thin wrappers over the store and the stalen
 | `tar_read(:name)` | Return a target's stored value (programmatic use) |
 | `@tar_load model clean_data` | Assign stored values to same-named variables in the caller's scope (interactive use) |
 | `tar_manifest()` | Table of targets, dependencies and formats, without touching the store |
+| `tar_list()` | Target names without dependencies: constants, input files, computations and output files, per connected component, in build order (alphabetical within a layer) |
 | `tar_outdated()` | Outdated targets with the reason for each (Phase 4) |
 | `tar_meta()` | All metadata records as a table |
 | `tar_invalidate(:name)` | Delete the metadata record so the target rebuilds; keep the object |

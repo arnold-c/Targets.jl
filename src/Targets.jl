@@ -3,7 +3,14 @@ module Targets
 using CodeTracking: CodeTracking
 using Dates: Dates
 using Downloads: Downloads
-using Graphs: SimpleDiGraph, add_edge!, inneighbors, nv, outneighbors
+using Graphs:
+    SimpleDiGraph,
+    add_edge!,
+    induced_subgraph,
+    inneighbors,
+    nv,
+    outneighbors,
+    weakly_connected_components
 using JLD2: JLD2
 using Logging: Logging
 using JuliaSyntax:
@@ -90,6 +97,9 @@ export tar_progress, tar_poll
 
 include("graph.jl")
 export tar_dot, tar_visnetwork
+
+include("list.jl")
+export tar_list, TargetList
 
 include("api.jl")
 
