@@ -62,10 +62,23 @@ struct BuildContext
     observe::Function
 end
 
+"""
+    passes_values(f)
+
+Whether target function `f` is called with the values of its dependencies (the
+default). A function that reads them from the store itself, such as a report's
+renderer, returns `false`: its dependencies then only count through their
+value hashes, and their values are neither loaded nor kept in memory for it.
+"""
+passes_values(f) = true
+
+"The dependencies whose values `t`'s function receives."
+value_deps(t::Target) = passes_values(t.f) ? t.deps : Symbol[]
+
 # How many selected targets still need each target's value in this run.
 function consumer_counts(p::Pipeline, selected)
     counts = Dict{Symbol, Int}(name => 0 for name in selected)
-    for name in selected, d in get_target(p, name).deps
+    for name in selected, d in value_deps(get_target(p, name))
         counts[d] += 1
     end
     return counts
@@ -353,7 +366,7 @@ end
 
 # Drop a value from memory once its last consumer in this run has finished.
 function release!(ctx::BuildContext, t::Target)
-    for d in t.deps
+    for d in value_deps(t)
         ctx.remaining[d] -= 1
         ctx.remaining[d] <= 0 && delete!(ctx.values, d)
     end
@@ -472,7 +485,7 @@ function plan!(ctx::BuildContext, t::Target)
         log!(ctx, "· $(t.name) up to date")
         return Job[]
     end
-    args, load_error = resolve_args(() -> Any[get_value!(ctx, d) for d in t.deps])
+    args, load_error = resolve_args(() -> Any[get_value!(ctx, d) for d in value_deps(t)])
     return [Job(
         t,
         string(t.name),
@@ -1002,6 +1015,29 @@ end
             ).built,
         )
         @test all(==(0), sizes) # an up-to-date run loads no object at all
+    end
+end
+
+@testitem "a target that reads the store itself gets no values and holds none" setup = [
+    SourceFixtures,
+] begin
+    mktempdir() do dir
+        code(n) = """
+        struct Reader end
+        (::Reader)(values...) = length(values)
+        Targets.passes_values(::Reader) = false
+        p = tar_pipeline(
+            target(:a, () -> $n),
+            target(:reader, Reader(); deps = [:a], source = :(read_store())),
+        )
+        """
+        sizes = Int[]
+        observe = ctx -> push!(sizes, length(ctx.values))
+        @test build_source(code(1), dir; observe).built == [:a, :reader]
+        @test read_values(dir, :reader) == (0,)
+        @test sizes == [0, 0] # nothing kept for a consumer that does not take values
+        @test isempty(build_source(code(1), dir).built)
+        @test build_source(code(2), dir).built == [:a, :reader] # still a dependency
     end
 end
 
