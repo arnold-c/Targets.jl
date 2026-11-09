@@ -1,0 +1,426 @@
+## Drawing the pipeline
+##
+## The layout is computed here, by layers, so that the Graphviz export and the
+## Makie plot (an extension) share it and no layout package is needed.
+
+const _descendants = descendants # the `descendants` keyword below shadows the function
+
+"""
+    graph_nodes(p, names, with_descendants)
+
+Targets to draw, in build order: all of them, or `names` with their ancestors
+(and, if asked, everything downstream of them).
+"""
+function graph_nodes(p::Pipeline, names, with_descendants::Bool)
+    names = as_names(names)
+    names === nothing && return copy(p.order)
+    keep = Set(ancestors(p, names))
+    with_descendants && union!(keep, _descendants(p, names))
+    return filter(n -> n in keep, p.order)
+end
+
+"""
+    GraphLayout
+
+`layers[i]` lists the targets in layer `i - 1` from top to bottom, and
+`positions[name] = (x, y)` places layers left to right.
+"""
+struct GraphLayout
+    layers::Vector{Vector{Symbol}}
+    positions::Dict{Symbol, Tuple{Float64, Float64}}
+end
+
+"""
+    graph_layout(p, nodes)
+
+Layer each target by its longest path from a root within `nodes`, then order
+targets within a layer by the mean position of their neighbours (to reduce
+crossings), falling back to declaration order for ties.
+"""
+function graph_layout(p::Pipeline, nodes::Vector{Symbol})
+    shown = Set(nodes)
+    deps(n) = [d for d in get_target(p, n).deps if d in shown]
+    dependents = Dict(n => Symbol[] for n in nodes)
+    for n in nodes, d in deps(n)
+        push!(dependents[d], n)
+    end
+    layer_of = Dict{Symbol, Int}()
+    for n in nodes
+        # build order: dependencies come first
+        layer_of[n] = isempty(deps(n)) ? 0 : 1 + maximum(layer_of[d] for d in deps(n))
+    end
+    depth = isempty(nodes) ? 0 : maximum(values(layer_of)) + 1
+    layers = [filter(n -> layer_of[n] == i - 1, nodes) for i in 1:depth]
+    declared = Dict(n => p.index[n] for n in nodes)
+
+    position = Dict(n => Float64(i) for layer in layers for (i, n) in enumerate(layer))
+    function reorder!(layer, neighbours)
+        key(n) = begin
+            ns = neighbours(n)
+            (
+                isempty(ns) ? position[n] : sum(position[m] for m in ns) / length(ns),
+                declared[n],
+            )
+        end
+        sort!(layer; by = key)
+        for (i, n) in enumerate(layer)
+            position[n] = Float64(i)
+        end
+    end
+    for _ in 1:2
+        foreach(i -> reorder!(layers[i], deps), 2:depth)
+        foreach(i -> reorder!(layers[i], n -> dependents[n]), (depth - 1):-1:1)
+    end
+    positions = Dict{Symbol, Tuple{Float64, Float64}}()
+    for (i, layer) in enumerate(layers), (j, n) in enumerate(layer)
+        positions[n] = (Float64(i - 1), (length(layer) + 1) / 2 - j)
+    end
+    return GraphLayout(layers, positions)
+end
+
+"""
+    node_statuses(p, nodes; store, root)
+
+`:uptodate`, `:outdated`, `:errored` or `:unbuilt` for each target, computed
+from the current code and store (nothing is stored).
+"""
+function node_statuses(p::Pipeline, nodes; store, root)
+    reasons = Dict(r.name => r.reason for r in tar_outdated(p; names = nodes, store, root))
+    status(reason) = reason === nothing ?
+        :uptodate :
+        reason == :missing ? :unbuilt : reason == :errored ? :errored : :outdated
+    return Dict(n => status(get(reasons, n, nothing)) for n in nodes)
+end
+
+const STATUS_COLORS = Dict(
+    :uptodate => "#a6dba0",
+    :outdated => "#fdb863",
+    :errored => "#e66101",
+    :unbuilt => "#d9d9d9",
+)
+
+"How many branches each branching target has in the store (absent if not built)."
+function branch_counts(p::Pipeline, nodes, store)
+    s = as_store(store)
+    counts = Dict{Symbol, Int}()
+    for n in nodes
+        get_target(p, n).pattern === nothing && continue
+        record = read_meta(s, n)
+        record === nothing || (counts[n] = length(record.branches))
+    end
+    return counts
+end
+
+node_label(t::Target, counts::AbstractDict) = haskey(counts, t.name) ?
+    "$(t.name) [$(counts[t.name])]" :
+    string(t.name)
+
+"""
+    DotGraph
+
+Graphviz DOT text returned by [`tar_dot`](@ref). Prints as the DOT text, renders as
+SVG where rich display is available and Graphviz is installed, and converts with
+`string`. `write(path, g)` saves the DOT file.
+"""
+struct DotGraph
+    dot::String
+end
+
+Base.string(g::DotGraph) = g.dot
+Base.show(io::IO, ::MIME"text/plain", g::DotGraph) = print(io, g.dot)
+Base.show(io::IO, g::DotGraph) = print(io, "DotGraph(", count(==('\n'), g.dot), " lines)")
+Base.write(io::IO, g::DotGraph) = write(io, g.dot)
+Base.write(path::AbstractString, g::DotGraph) = write(path, g.dot)
+
+graphviz() = Sys.which("dot")
+Base.showable(::MIME"image/svg+xml", ::DotGraph) = graphviz() !== nothing
+function Base.show(io::IO, ::MIME"image/svg+xml", g::DotGraph)
+    exe = graphviz()
+    exe === nothing && error("rendering DOT as SVG needs Graphviz's `dot` on the PATH")
+    print(io, read(pipeline(IOBuffer(g.dot), `$exe -Tsvg`), String))
+end
+
+"""
+    tar_dot(p::Pipeline; names = nothing, descendants = false, status = true,
+            store = default_store_path(), root = nothing)
+
+A [`DotGraph`](@ref): Graphviz DOT for the pipeline, laid out left to right and coloured by
+status (up to date, outdated, errored, not built). With `names`, only those
+targets and their ancestors are drawn; `descendants = true` adds everything
+downstream of them. File targets are drawn as boxes. `status = false` draws the
+structure only, without consulting the store.
+
+At the REPL it prints the DOT text; in notebooks and VS Code it renders as an SVG
+when Graphviz (`dot`) is installed. `write("pipeline.dot", tar_dot())` saves it,
+and `string(tar_dot())` gives the text.
+"""
+function tar_dot(
+    p::Pipeline;
+    names = nothing,
+    descendants::Bool = false,
+    status::Bool = true,
+    store::Union{Store, AbstractString} = default_store_path(),
+    root::Union{Nothing, AbstractString} = nothing,
+)
+    nodes = graph_nodes(p, names, descendants)
+    layout = graph_layout(p, nodes)
+    statuses = status ? node_statuses(p, nodes; store, root) : nothing
+    counts = status ? branch_counts(p, nodes, store) : Dict{Symbol, Int}()
+    io = IOBuffer()
+    println(io, "digraph targets {")
+    println(io, "  rankdir=LR;")
+    println(io, "  node [style=filled, fontname=\"Helvetica\"];")
+    for n in nodes
+        t = get_target(p, n)
+        color = statuses === nothing ? "#ffffff" : STATUS_COLORS[statuses[n]]
+        shape = t.format == :file ? "box" : "ellipse"
+        println(
+            io,
+            "  \"$n\" [label=\"$(node_label(t, counts))\", shape=$shape, fillcolor=\"$color\"];",
+        )
+    end
+    shown = Set(nodes)
+    for n in nodes, d in get_target(p, n).deps
+        d in shown && println(io, "  \"$d\" -> \"$n\";")
+    end
+    for layer in layout.layers
+        println(io, "  { rank=same; ", join(("\"$n\";" for n in layer), " "), " }")
+    end
+    println(io, "}")
+    return DotGraph(String(take!(io)))
+end
+tar_dot(; script::AbstractString = default_script(), kwargs...) = tar_dot(
+    load_pipeline(script);
+    kwargs...,
+)
+
+"""
+    NetworkData
+
+Everything needed to draw a pipeline, independent of how it is plotted: node
+names, labels, positions (from [`graph_layout`](@ref)), fill colours, whether each
+node is a file target, and edges as index pairs `(dependency, dependent)`.
+"""
+struct NetworkData
+    nodes::Vector{Symbol}
+    labels::Vector{String}
+    positions::Vector{Tuple{Float64, Float64}}
+    colors::Vector{String}
+    is_file::Vector{Bool}
+    edges::Vector{Tuple{Int, Int}}
+end
+
+function network_data(p::Pipeline; names, descendants::Bool, status::Bool, store, root)
+    nodes = graph_nodes(p, names, descendants)
+    layout = graph_layout(p, nodes)
+    index = Dict(n => i for (i, n) in enumerate(nodes))
+    statuses = status ? node_statuses(p, nodes; store, root) : nothing
+    counts = status ? branch_counts(p, nodes, store) : Dict{Symbol, Int}()
+    targets = [get_target(p, n) for n in nodes]
+    return NetworkData(
+        nodes,
+        [node_label(t, counts) for t in targets],
+        [layout.positions[n] for n in nodes],
+        [statuses === nothing ? "#ffffff" : STATUS_COLORS[statuses[n]] for n in nodes],
+        [t.format == :file for t in targets],
+        [
+            (index[d], index[n])
+            for n in nodes
+            for d in get_target(p, n).deps
+            if haskey(index, d)
+        ],
+    )
+end
+
+const MAKIE_ID = Base.PkgId(Base.UUID("ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"), "Makie")
+
+"""
+    network_figure(data; figure_size) -> (figure, axis)
+
+An undecorated Makie figure and axis for `data`, with the pipeline drawn into it.
+Defined by TargetsMakieExt.
+"""
+function network_figure end
+
+"""
+    tar_visnetwork(p::Pipeline; names = nothing, descendants = false, status = true,
+                   store = default_store_path(), root = nothing, figure_size = (900, 500))
+
+Plot the pipeline with the same layout, colours and subgraph selection as
+[`tar_dot`](@ref), returning a Makie `Figure`. Needs a Makie backend
+(`using CairoMakie` or `GLMakie`). File targets are squares, branching targets
+show their branch count, and colours show status.
+"""
+function tar_visnetwork(
+    p::Pipeline;
+    names = nothing,
+    descendants::Bool = false,
+    status::Bool = true,
+    store::Union{Store, AbstractString} = default_store_path(),
+    root::Union{Nothing, AbstractString} = nothing,
+    figure_size = (900, 500),
+)
+    haskey(Base.loaded_modules, MAKIE_ID) ||
+        error(
+            "tar_visnetwork needs a Makie backend; load one first, e.g. `using CairoMakie`",
+        )
+    hasmethod(network_figure, Tuple{NetworkData}) ||
+        error(
+            "Makie is loaded but Targets' plotting extension is not. The active environment's " *
+                "Manifest.toml may record out-of-date extension information for Targets (common when " *
+                "Targets is `dev`ed by path): run `import Pkg; Pkg.resolve()` and restart Julia.",
+        )
+    data = network_data(p; names, descendants, status, store, root)
+    fig, _ = network_figure(data; figure_size)
+    return fig
+end
+tar_visnetwork(; script::AbstractString = default_script(), kwargs...) = tar_visnetwork(
+    load_pipeline(script);
+    kwargs...,
+)
+
+@testmodule GraphFixtures begin
+    using Targets
+    export diamond
+
+    "raw -> {left, right} -> both, plus an unrelated target `other` and a file target."
+    diamond() = tar_pipeline(
+        target(:raw, () -> 1),
+        target(:left, raw -> raw + 1),
+        target(:right, raw -> raw + 2),
+        target(:both, (left, right) -> left + right),
+        target(:other, () -> 5),
+    )
+end
+
+@testitem "graph_layout layers by longest path and orders within layers" setup = [
+    GraphFixtures,
+] begin
+    using Targets: graph_layout
+    p = diamond()
+    layout = graph_layout(p, copy(p.order))
+    @test layout.layers == [[:raw, :other], [:left, :right], [:both]]
+    @test layout.positions[:raw][1] == 0 && layout.positions[:both][1] == 2
+    # within a layer the order is top to bottom
+    @test layout.positions[:left][2] > layout.positions[:right][2]
+    # a longer path pushes a target further right than its shortest dependency suggests
+    q = tar_pipeline(
+        target(:a, () -> 1),
+        target(:b, a -> 1),
+        target(:c, b -> 1),
+        target(:d, (a, c) -> 1),
+    )
+    @test graph_layout(q, copy(q.order)).layers == [[:a], [:b], [:c], [:d]]
+    @test graph_layout(p, Symbol[]).layers == []
+end
+
+@testitem "graph_nodes selects ancestors, optionally with descendants" setup = [
+    GraphFixtures,
+] begin
+    using Targets: graph_nodes
+    p = diamond()
+    @test graph_nodes(p, nothing, false) == p.order
+    @test graph_nodes(p, [:left], false) == [:raw, :left]
+    @test graph_nodes(p, [:left], true) == [:raw, :left, :both]
+    @test graph_nodes(p, [:other], true) == [:other]
+end
+
+@testitem "tar_dot draws nodes, edges, ranks and subgraphs" setup = [GraphFixtures] begin
+    p = diamond()
+    dot = string(tar_dot(p; status = false))
+    @test startswith(dot, "digraph targets {")
+    @test occursin("\"raw\" -> \"left\";", dot)
+    @test occursin("\"left\" -> \"both\";", dot)
+    @test occursin("{ rank=same; \"left\"; \"right\"; }", dot)
+    @test !occursin("\"other\" ->", dot)
+    sub = string(tar_dot(p; names = [:left], status = false))
+    @test occursin("\"raw\" -> \"left\";", sub)
+    @test !occursin("right", sub) && !occursin("both", sub)
+    @test occursin(
+        "\"both\"",
+        string(tar_dot(p; names = [:left], descendants = true, status = false)),
+    )
+    @test_throws "did you mean `left`" tar_dot(p; names = [:lft], status = false)
+end
+
+@testitem "tar_dot colours targets by status as code and the store change" setup = [
+    SourceFixtures,
+] begin
+    mktempdir() do dir
+        code(clean) = """
+        p = tar_pipeline(
+            target(:raw, () -> 10),
+            target(:clean, raw -> $clean),
+            target(:model, clean -> clean * 2),
+        )
+        """
+        green, orange, gray = "#a6dba0", "#fdb863", "#d9d9d9"
+        dot(code) = begin
+            m, _ = load_source(code; dir)
+            p = Base.invokelatest(getproperty, m, :p)
+            string(tar_dot(p; store = joinpath(dir, "_targets"), root = dir))
+        end
+        function colour(d, name)
+            line = only(filter(l -> startswith(strip(l), "\"$name\" ["), split(d, '\n')))
+            return match(r"fillcolor=\"(#\w+)\"", line).captures[1]
+        end
+        d0 = dot(code("raw + 1"))
+        @test [colour(d0, n) for n in (:raw, :clean, :model)] == [gray, orange, orange]
+        build_source(code("raw + 1"), dir)
+        d1 = dot(code("raw + 1"))
+        @test [colour(d1, n) for n in (:raw, :clean, :model)] == [green, green, green]
+        d2 = dot(code("raw + 2")) # an edit: clean and its descendant are outdated
+        @test [colour(d2, n) for n in (:raw, :clean, :model)] == [green, orange, orange]
+    end
+end
+
+@testitem "tar_visnetwork explains how to enable plotting" setup = [GraphFixtures] begin
+    # (a shared test process may already have loaded Makie; then there is nothing to explain)
+    if !haskey(Base.loaded_modules, Targets.MAKIE_ID)
+        @test_throws "Makie backend" tar_visnetwork(diamond())
+    end
+end
+
+@testitem "tar_visnetwork plots through the Makie extension" setup = [GraphFixtures] begin
+    using Makie
+    fig = tar_visnetwork(diamond(); status = false)
+    @test fig isa Makie.Figure
+    ax = only(filter(c -> c isa Makie.Axis, fig.content))
+    @test !isempty(ax.scene.plots)
+    @test tar_visnetwork(diamond(); names = [:left], status = false) isa Makie.Figure
+    @test tar_visnetwork(diamond(); names = [:left], descendants = true, status = false) isa
+        Makie.Figure
+end
+
+@testitem "tar_dot returns a DotGraph that prints its DOT text" setup = [
+    GraphFixtures,
+] begin
+    using Targets: DotGraph
+    d = tar_dot(diamond(); status = false)
+    @test d isa DotGraph
+    @test sprint(show, MIME("text/plain"), d) == string(d)
+    @test startswith(string(d), "digraph targets {")
+    mktempdir() do dir
+        path = joinpath(dir, "p.dot")
+        write(path, d)
+        @test read(path, String) == string(d)
+    end
+end
+
+@testitem "network_data describes the nodes, edges and labels to draw" setup = [
+    GraphFixtures,
+] begin
+    using Targets: network_data
+    d = network_data(
+        diamond();
+        names = nothing,
+        descendants = false,
+        status = false,
+        store = "",
+        root = nothing,
+    )
+    @test d.nodes == [:raw, :left, :right, :both, :other]
+    @test sort(d.edges) == [(1, 2), (1, 3), (2, 4), (3, 4)]
+    @test d.labels == string.(d.nodes)
+    @test length(d.positions) == 5 && !any(d.is_file)
+end
