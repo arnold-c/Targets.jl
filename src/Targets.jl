@@ -1,44 +1,63 @@
 module Targets
 
+using CodeTracking: CodeTracking
+using Dates: Dates
+using Graphs: SimpleDiGraph, add_edge!, inneighbors, nv, outneighbors
+using JLD2: JLD2
+using JuliaSyntax:
+    JuliaSyntax,
+    SyntaxNode,
+    @K_str,
+    children,
+    kind,
+    last_byte,
+    source_location
+using Preferences: Preferences
 using SHA: SHA
 using Serialization: Serialization
-using JLD2: JLD2
-using DataFrames: DataFrames
+using TOML: TOML
+using TestItems: @testitem, @testmodule
 
-include("helpers.jl")
-export project_base
+include("testing.jl")
 
-include("types.jl")
-export AbstractTargets, Target, AbstractSaveFormat, jld2
+include("target.jl")
+export Target, target
 
-include("hash_methods.jl")
-export @hash_fn_method,
-    hash_fn_method,
-    generic_hash
+include("pipeline.jl")
+export Pipeline, tar_pipeline
 
-include("tar_target.jl")
-export tar_target, @tar_target
+include("static.jl")
+export tar_map, tar_combine
 
-include("hash_df_funcs.jl")
-export load_hash_df,
-    filter_hash_df_get_rownum,
-    delete_outdated_hashes!,
-    update_hash_DF!
+include("canonical.jl")
 
-include("tar_read.jl")
-export tar_read
+include("source.jl")
 
-include("tar_list.jl")
-export @tar_list
+include("hashing.jl")
 
-include("tar_dependency.jl")
-export hash_dependencies
+include("store.jl")
+export tar_meta
 
-include("tar_make.jl")
-export tar_make
+include("codedeps.jl")
 
-@static if false
-    include("../test/hash.jl")
-end
+include("manifest.jl")
+
+include("files.jl")
+
+include("outdated.jl")
+
+include("make.jl")
+export tar_make, tar_outdated, BuildSummary
+
+include("branching.jl")
+
+include("graph.jl")
+export tar_dot, tar_visnetwork
+
+include("api.jl")
+
+include("macros.jl")
+export @pipeline, @target
+export tar_read, @tar_load, tar_manifest, tar_invalidate, tar_delete, tar_prune, tar_destroy
 
 end
