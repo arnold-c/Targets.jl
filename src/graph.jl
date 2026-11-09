@@ -116,6 +116,15 @@ const STATUS_COLORS = Dict(
     :running => "#80b1d3",
 )
 
+"Status => description, in the order statuses are listed."
+const STATUS_LABELS = (
+    uptodate = "Up to date",
+    outdated = "Outdated",
+    errored = "Errored",
+    unbuilt = "Not built",
+    running = "Running",
+)
+
 "How many branches each branching target has in the store (absent if not built)."
 function branch_counts(p::Pipeline, nodes, store)
     s = as_store(store)
@@ -216,7 +225,8 @@ tar_dot(; script::AbstractString = default_script(), kwargs...) = tar_dot(
 
 Everything needed to draw a pipeline, independent of how it is plotted: node
 names, labels, positions (from [`graph_layout`](@ref)), fill colours, whether each
-node is a file target, and edges as index pairs `(dependency, dependent)`.
+node is a file target, edges as index pairs `(dependency, dependent)`, each
+node's [`tar_list`](@ref) section and, unless drawn without status, its status.
 """
 struct NetworkData
     nodes::Vector{Symbol}
@@ -225,6 +235,8 @@ struct NetworkData
     colors::Vector{String}
     is_file::Vector{Bool}
     edges::Vector{Tuple{Int, Int}}
+    sections::Vector{Symbol}
+    statuses::Union{Nothing, Vector{Symbol}}
 end
 
 function network_data(p::Pipeline; names, descendants::Bool, status::Bool, store, root)
@@ -246,6 +258,8 @@ function network_data(p::Pipeline; names, descendants::Bool, status::Bool, store
             for d in get_target(p, n).deps
             if haskey(index, d)
         ],
+        [list_section(t) for t in targets],
+        statuses === nothing ? nothing : [statuses[n] for n in nodes],
     )
 end
 
@@ -560,4 +574,17 @@ end
     @test sort(d.edges) == [(1, 2), (1, 3), (2, 4), (3, 4)]
     @test d.labels == string.(d.nodes)
     @test length(d.positions) == 5 && !any(d.is_file)
+    @test d.sections == [:constants, :computations, :computations, :computations, :constants]
+    @test d.statuses === nothing
+    mktempdir() do dir # nothing built yet
+        s = network_data(
+            diamond();
+            names = [:left],
+            descendants = false,
+            status = true,
+            store = joinpath(dir, "_targets"),
+            root = dir,
+        )
+        @test s.statuses == [:unbuilt, :outdated] # as in tar_dot's colours
+    end
 end
