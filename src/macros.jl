@@ -17,11 +17,59 @@ macro target(args...)
     )
 end
 
+"""
+    @quarto name = "path.qmd" [option = value ...]
+    @quarto "path.qmd" [option = value ...]
+
+Declare a [`tar_quarto`](@ref) report inside [`@pipeline`](@ref); the second
+form names it after the file (`reports/summary.qmd` is `summary`). Options are
+the keyword arguments of `tar_quarto`. Like `@target`, it is only valid inside
+`@pipeline`; elsewhere, call `tar_quarto`.
+"""
+macro quarto(args...)
+    error(
+        "@quarto can only be used inside @pipeline; use `tar_quarto(name, path)` to declare " *
+            "a report on its own",
+    )
+end
+
 struct TargetDecl
     name::Symbol
     body::Any
     options::Vector{Pair{Symbol, Any}}
     line::LineNumberNode
+end
+
+struct QuartoDecl
+    name::Symbol
+    path::Any
+    options::Vector{Pair{Symbol, Any}}
+    line::LineNumberNode
+end
+
+function parse_quarto_decl(ex, line::LineNumberNode)
+    args = Any[a for a in ex.args[3:end] if !(a isa LineNumberNode)]
+    head = isempty(args) ? nothing : args[1]
+    name, path = if Meta.isexpr(head, :(=)) && head.args[1] isa Symbol
+        head.args[1], head.args[2]
+    elseif head isa AbstractString
+        report_name(head), head
+    else
+        error(
+            "$(line.file):$(line.line): expected `@quarto name = \"path.qmd\"` or " *
+                "`@quarto \"path.qmd\"`, got `$(ex)`",
+        )
+    end
+    options = Pair{Symbol, Any}[]
+    for opt in args[2:end]
+        (Meta.isexpr(opt, :(=)) && opt.args[1] isa Symbol) ||
+            error(
+                "$(line.file):$(line.line): in `@quarto $name`, expected an option like " *
+                    "`quarto_args = [\"--to\", \"pdf\"]`, got `$opt`",
+            )
+        push!(options, opt.args[1] => opt.args[2])
+    end
+    return QuartoDecl(name, path, options, line)
 end
 
 const TARGET_OPTIONS = (
@@ -57,16 +105,18 @@ function parse_target_decl(ex, line::LineNumberNode)
 end
 
 function parse_pipeline_block(block)
-    decls = TargetDecl[]
+    decls = Union{TargetDecl, QuartoDecl}[]
     line = LineNumberNode(0, :none)
     for ex in block.args
         if ex isa LineNumberNode
             line = ex
         elseif Meta.isexpr(ex, :macrocall) && ex.args[1] === Symbol("@target")
             push!(decls, parse_target_decl(ex, line))
+        elseif Meta.isexpr(ex, :macrocall) && ex.args[1] === Symbol("@quarto")
+            push!(decls, parse_quarto_decl(ex, line))
         else
             error(
-                "$(line.file):$(line.line): @pipeline expects `@target` lines, got `$ex`; " *
+                "$(line.file):$(line.line): @pipeline expects `@target` and `@quarto` lines, got `$ex`; " *
                     "use `tar_pipeline(...)` to mix in other targets",
             )
         end
@@ -141,14 +191,28 @@ function expand_target(d::TargetDecl, names)
     )
 end
 
+# A report's dependencies come from its document, so only its options are expanded.
+function expand_target(d::QuartoDecl, names)
+    kws = Any[Expr(:kw, k, v) for (k, v) in d.options]
+    return Expr(
+        :call,
+        GlobalRef(@__MODULE__, :tar_quarto),
+        Expr(:parameters, kws...),
+        QuoteNode(d.name),
+        d.path,
+    )
+end
+
 """
     @pipeline [track = [...]] [seed = ...] begin
         @target name = expression [format = ...] [pattern = ...] [cue = ...] [seed = ...]
+        @quarto name = "report.qmd" [options...]
         ...
     end
 
-Build a [`Pipeline`](@ref) from `@target` lines, equivalent to the
-[`tar_pipeline`](@ref) of the corresponding [`target`](@ref)s. Each target's
+Build a [`Pipeline`](@ref) from `@target` and [`@quarto`](@ref) lines,
+equivalent to the [`tar_pipeline`](@ref) of the corresponding
+[`target`](@ref)s and [`tar_quarto`](@ref) reports. Each target's
 dependencies are the other targets its expression mentions, and the expression
 itself is what gets hashed, so reformatting never rebuilds. A local variable
 that shadows a target name counts as a dependency (harmless: one extra edge).
@@ -235,7 +299,7 @@ end
             end
         ),
     )
-    @test_throws "expects `@target` lines" Core.eval(
+    @test_throws "expects `@target` and `@quarto` lines" Core.eval(
         m,
         :(
             @pipeline begin
@@ -322,5 +386,54 @@ end
             stacktrace(catch_backtrace())
         end
         @test any(fr -> endswith(String(fr.file), "src.jl") && fr.line == 3, frames)
+    end
+end
+
+@testitem "@quarto declares reports inside @pipeline" setup = [MacroFixtures] begin
+    mktempdir() do dir
+        report = joinpath(dir, "report.qmd")
+        summary = joinpath(dir, "summary.qmd")
+        write(report, "```{julia}\ntar_read(:n)\n```\n")
+        write(summary, "`{julia} tar_read(:report)`\n")
+        m = Module(:QuartoMacro)
+        Core.eval(m, :(using Targets))
+        p = Core.eval(
+            m,
+            :(
+                @pipeline begin
+                    @target n = 1
+                    @quarto report = $report cue = :always
+                    @quarto $summary
+                    @target size = length(report)
+                end
+            ),
+        )
+        q = tar_pipeline(
+            target(:n, () -> 1),
+            tar_quarto(:report, report; cue = :always),
+            tar_quarto(:summary, summary),
+            target(:size, report -> length(report)),
+        )
+        @test same_graph(p, q)
+        @test Targets.get_target(p, :report).cue == :always
+        @test Targets.get_target(p, :summary).deps == [:report]
+        @test Targets.get_target(p, :size).deps == [:report]
+        @test_throws "inside @pipeline" Core.eval(m, :(@quarto r = $report))
+        @test_throws "expected `@quarto name" Core.eval(
+            m,
+            :(
+                @pipeline begin
+                    @quarto 1 + 2
+                end
+            ),
+        )
+        @test_throws "expected an option" Core.eval(
+            m,
+            :(
+                @pipeline begin
+                    @quarto r = $report 5
+                end
+            ),
+        )
     end
 end
