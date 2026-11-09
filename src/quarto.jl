@@ -285,6 +285,7 @@ struct QuartoReport
     base::String
     extra_files::Vector{String}
     output::Vector{String}
+    params::Vector{String}
     quarto_args::Vector{String}
     quarto::String
     restart::Bool
@@ -306,6 +307,7 @@ closure_captures(r::QuartoReport) = (
     path = portable(r, r.path),
     extra_files = [portable(r, f) for f in r.extra_files],
     output = [portable(r, f) for f in r.output],
+    params = r.params,
     quarto_args = r.quarto_args,
     restart = r.restart,
 )
@@ -344,6 +346,7 @@ function quarto_cli_args(r::QuartoReport, store::AbstractString)
     r.restart && push!(args, "--execute-daemon-restart")
     push!(args, "--cache-refresh")
     append!(args, ["-M", "targets-store:" * store, "-M", "targets-rendering:true"])
+    foreach(p -> append!(args, ["-P", p]), r.params)
     return append!(args, r.quarto_args)
 end
 
@@ -407,12 +410,38 @@ function report_name(path::AbstractString)
     return Symbol(stem)
 end
 
+"""
+    param_args(name, params)
+
+The `key:value` arguments of Quarto's `-P` for the parameters of report `name`,
+sorted by key. Values are numbers, booleans, strings or symbols; strings are
+quoted so that Quarto reads them as strings.
+"""
+param_args(name::Symbol, params) = sort!(
+    String[string(k, ":", param_value(name, k, v)) for (k, v) in pairs(params)]
+)
+
+function param_value(name::Symbol, key, value)
+    Base.isidentifier(string(key)) ||
+        throw(ArgumentError("report `$name`: parameter `$key` is not a valid Julia name"))
+    value isa Bool && return string(value)
+    (value isa Integer || (value isa AbstractFloat && isfinite(value))) &&
+        return string(value)
+    value isa Union{AbstractString, Symbol} &&
+        return "\"" * escape_string(string(value), '"') * "\""
+    throw(ArgumentError(
+        "report `$name`: parameter `$key` must be a number, boolean, string or symbol, " *
+            "got `$(repr(value))`",
+    ))
+end
+
 as_paths(base, paths::AbstractString) = as_paths(base, [paths])
 as_paths(base, paths) = String[normpath(joinpath(base, p)) for p in paths]
 
 """
     tar_quarto([name,] path; deps = [], extra_files = [], output = nothing,
-               quarto_args = [], quarto = "quarto", restart = true, kwargs...)
+               params = (;), quarto_args = [], quarto = "quarto", restart = true,
+               kwargs...)
 
 A target that renders the Quarto document `path` (a `.qmd` file) with the
 `quarto` CLI. `name` defaults to the file's stem (`reports/summary.qmd` is
@@ -436,7 +465,10 @@ the document's code are not tracked.
 The outputs are `output` when given, else the document's stem with the
 extension of each format in its front matter (or chosen with `--to` in
 `quarto_args`), `html` by default, plus the `<stem>_files` directory if Quarto
-writes one. Each render restarts Quarto's Julia worker for the document, so
+writes one. `params` (a `NamedTuple` or `Dict` of numbers, booleans, strings
+and symbols) sets the document's parameters (`quarto render -P key:value`),
+which it declares with defaults under `params:` in its front matter; changing
+one rebuilds the report. Each render restarts Quarto's Julia worker for the document, so
 edited code is never stale (`restart = false` keeps it, which is faster),
 and refreshes Quarto's cache. `quarto` is the Quarto executable. Other keyword
 arguments go to [`target`](@ref) (`cue`, `error`, `retries`, ...).
@@ -447,6 +479,7 @@ function tar_quarto(
     deps = Symbol[],
     extra_files = String[],
     output = nothing,
+    params = (;),
     quarto_args = String[],
     quarto::AbstractString = "quarto",
     restart::Bool = true,
@@ -468,6 +501,7 @@ function tar_quarto(
         base,
         as_paths(base, extra_files),
         output === nothing ? String[] : as_paths(base, output),
+        param_args(name, params),
         collect(String, quarto_args),
         String(quarto),
         restart,
@@ -863,6 +897,31 @@ end
         finally
             popfirst!(LOAD_PATH)
         end
+    end
+end
+
+@testitem "report parameters are passed to Quarto, and changing one rebuilds" setup = [
+    SourceFixtures,
+    QuartoFixtures,
+] begin
+    using Targets: param_args
+    @test param_args(:r, (b = true, a = 0.5, c = "x \"y\"", d = :z, e = 3)) ==
+        ["a:0.5", "b:true", "c:\"x \\\"y\\\"\"", "d:\"z\"", "e:3"]
+    @test param_args(:r, Dict("k" => 1)) == ["k:1"]
+    @test_throws "must be a number" param_args(:r, (a = [1, 2],))
+    @test_throws "must be a number" param_args(:r, (a = NaN,))
+    @test_throws "not a valid Julia name" param_args(:r, Dict("a-b" => 1))
+    mktempdir() do dir
+        write_report(dir, "---\nparams:\n  alpha: 0.1\n---\nText\n")
+        code(alpha) = report_pipeline(; options = ", params = (alpha = $alpha,)")
+        @test build_source(code(0.2), dir).built == [:n, :unused, :report]
+        args = readlines(joinpath(dir, "args.txt"))
+        i = findfirst(==("-P"), args)
+        @test args[i + 1] == "alpha:0.2"
+        @test isempty(build_source(code(0.2), dir).built)
+        @test outdated_source(code(0.3), dir) ==
+            [(name = :report, reason = :command_changed)]
+        @test build_source(code(0.3), dir).built == [:report]
     end
 end
 
