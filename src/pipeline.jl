@@ -56,6 +56,7 @@ function Pipeline(targets::Vector{Target}, track::Vector{Any} = Any[], seed::Int
     index = build_index(targets)
     check_dependencies(targets, index)
     check_patterns(targets)
+    check_reports(targets)
     graph = build_graph(targets, index)
     order = build_order(targets, graph)
     return Pipeline(targets, index, graph, order, track, build_groups(targets, index), seed)

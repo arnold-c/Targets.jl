@@ -90,6 +90,7 @@ include("replicate.jl")
 export tar_rep, tar_map_rep
 
 include("quarto.jl")
+export tar_quarto
 
 include("dispatch.jl")
 export tar_slots

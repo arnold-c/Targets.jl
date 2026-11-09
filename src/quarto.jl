@@ -268,6 +268,243 @@ function requested_formats(args::Vector{String})
     return nothing
 end
 
+## Report targets
+
+"""
+    QuartoReport
+
+The function of a [`tar_quarto`](@ref) target. Called during a build, it renders
+its document with the `quarto` CLI and returns the output files followed by the
+source files (the document, the files it includes and `extra_files`), all of
+which the file target then tracks by content. Paths are absolute; `base` is the
+directory relative paths were given from. `runner(args, dir)` runs Quarto with
+the command-line arguments `args` in `dir` (`nothing`: the `quarto` CLI).
+"""
+struct QuartoReport
+    path::String
+    base::String
+    extra_files::Vector{String}
+    output::Vector{String}
+    quarto_args::Vector{String}
+    quarto::String
+    restart::Bool
+    runner::Any
+end
+
+# A report reads the store itself (see `passes_values`).
+passes_values(::QuartoReport) = false
+
+portable(r::QuartoReport, path::AbstractString) = replace(
+    relpath(path, r.base),
+    '\\' => '/',
+)
+
+# What goes into a report's command hash: its options, with paths relative to
+# `base` so that a moved project does not rebuild, and without the machine's
+# Quarto location or the runner.
+closure_captures(r::QuartoReport) = (
+    path = portable(r, r.path),
+    extra_files = [portable(r, f) for f in r.extra_files],
+    output = [portable(r, f) for f in r.output],
+    quarto_args = r.quarto_args,
+    restart = r.restart,
+)
+
+"""
+    expected_outputs(r::QuartoReport)
+
+The files rendering `r` writes: `output` when given, else the document's stem
+with the extension of each format chosen by `--to` in `quarto_args` or listed
+in the front matter (`html` by default).
+"""
+function expected_outputs(r::QuartoReport)
+    isempty(r.output) || return r.output
+    lines = front_matter(read(r.path, String))
+    front_matter_value(lines, "output-file") === nothing ||
+        error(
+            "`$(r.path)` sets `output-file`, so pass the files it writes to tar_quarto as `output`",
+        )
+    formats = something(requested_formats(r.quarto_args), front_matter_formats(lines))
+    stem = splitext(r.path)[1]
+    return unique([stem * "." * output_extension(f) for f in formats])
+end
+
+function output_extension(format::AbstractString)
+    ext = format_extension(format)
+    ext === nothing &&
+        error(
+            "cannot tell which file Quarto format `$format` writes; pass the files as `output`",
+        )
+    return ext
+end
+
+"The command-line arguments that render `r` into `store`'s build."
+function quarto_cli_args(r::QuartoReport, store::AbstractString)
+    args = ["render", r.path]
+    r.restart && push!(args, "--execute-daemon-restart")
+    push!(args, "--cache-refresh")
+    append!(args, ["-M", "targets-store:" * store, "-M", "targets-rendering:true"])
+    return append!(args, r.quarto_args)
+end
+
+"Run the `quarto` CLI with `args` in `dir`; a failure's error ends with Quarto's output."
+function run_quarto(quarto::AbstractString, args::Vector{String}, dir::AbstractString)
+    exe = Sys.which(quarto)
+    exe === nothing &&
+        error(
+            "cannot find the Quarto CLI `$quarto`; install it from https://quarto.org or " *
+                "pass its path as `quarto = ...`",
+        )
+    output = IOBuffer()
+    try
+        run(pipeline(Cmd(`$exe $args`; dir); stdout = output, stderr = output))
+    catch e
+        e isa ProcessFailedException || rethrow()
+        text = String(take!(output))
+        error("quarto render failed:\n" * last(text, 3000))
+    end
+    return nothing
+end
+
+function (r::QuartoReport)(_...)
+    place = RUNNING_PLACE[]
+    store = place === nothing ? abspath(default_store_path()) : place.store
+    root = place === nothing ? project_root() : place.root
+    sources = vcat(quarto_sources(r.path), r.extra_files)
+    missing_extra = filter(!ispath, r.extra_files)
+    isempty(missing_extra) ||
+        error("extra files of the report do not exist: $(join(missing_extra, ", "))")
+    before = map(path_hash, sources)
+    outputs = expected_outputs(r)
+    args = quarto_cli_args(r, store)
+    r.runner === nothing ? run_quarto(r.quarto, args, root) : r.runner(args, root)
+    map(path_hash, sources) == before ||
+        error("`$(r.path)` or a file it uses changed while it was rendered; build again")
+    absent = filter(!ispath, outputs)
+    isempty(absent) ||
+        error(
+            "Quarto did not write $(join(absent, ", ")); pass the files the document " *
+                "writes as `output`",
+        )
+    support = splitext(r.path)[1] * "_files"
+    isempty(r.output) && isdir(support) && push!(outputs, support)
+    return vcat(outputs, sources)
+end
+
+"The directory relative paths in a pipeline script are taken from: the script's."
+function script_dir()
+    path = Base.source_path(nothing)
+    return path === nothing ? project_root() : dirname(path)
+end
+
+"A target name from a document's file name: `reports/summary.qmd` is `:summary`."
+function report_name(path::AbstractString)
+    stem = splitext(basename(path))[1]
+    Base.isidentifier(stem) ||
+        throw(ArgumentError(
+            "cannot name a target after `$path`; give a name, e.g. tar_quarto(:report, \"$path\")",
+        ))
+    return Symbol(stem)
+end
+
+as_paths(base, paths::AbstractString) = as_paths(base, [paths])
+as_paths(base, paths) = String[normpath(joinpath(base, p)) for p in paths]
+
+"""
+    tar_quarto([name,] path; deps = [], extra_files = [], output = nothing,
+               quarto_args = [], quarto = "quarto", restart = true, kwargs...)
+
+A target that renders the Quarto document `path` (a `.qmd` file) with the
+`quarto` CLI. `name` defaults to the file's stem (`reports/summary.qmd` is
+`:summary`). Relative paths are relative to the directory of the pipeline
+script (`_targets.jl`).
+
+Its dependencies are the targets the document's executable Julia cells (and
+inline Julia code, and the files it includes with `{{< include >}}`) read with
+`tar_read(:name)` or `@tar_load name`, found without running anything, plus
+`deps`. Cells marked `#| eval: false` are skipped, and reads whose name is not
+a literal give a warning: list those in `deps`. The values are not passed in:
+the document reads them from the store, which is the one `tar_make` is building
+(see [`tar_read`](@ref)).
+
+It is a file target whose files are the outputs followed by the document, the
+files it includes and `extra_files` (e.g. a bibliography). So it is rebuilt
+when any of them changes in content (not when they are only touched), when an
+output is deleted, or when a target it reads changes. Functions called from
+the document's code are not tracked.
+
+The outputs are `output` when given, else the document's stem with the
+extension of each format in its front matter (or chosen with `--to` in
+`quarto_args`), `html` by default, plus the `<stem>_files` directory if Quarto
+writes one. Each render restarts Quarto's Julia worker for the document, so
+edited code is never stale (`restart = false` keeps it, which is faster),
+and refreshes Quarto's cache. `quarto` is the Quarto executable. Other keyword
+arguments go to [`target`](@ref) (`cue`, `error`, `retries`, ...).
+"""
+function tar_quarto(
+    name::Symbol,
+    path::AbstractString;
+    deps = Symbol[],
+    extra_files = String[],
+    output = nothing,
+    quarto_args = String[],
+    quarto::AbstractString = "quarto",
+    restart::Bool = true,
+    render = nothing,
+    seed = nothing,
+    kwargs...,
+)
+    for k in (:format, :pattern, :source)
+        haskey(kwargs, k) &&
+            throw(ArgumentError("tar_quarto `$name`: `$k` cannot be set for a report"))
+    end
+    base = script_dir()
+    file = only(as_paths(base, path))
+    endswith(lowercase(file), ".qmd") ||
+        throw(ArgumentError("tar_quarto `$name`: `$path` is not a `.qmd` file"))
+    isfile(file) || throw(ArgumentError("tar_quarto `$name`: `$file` does not exist"))
+    report = QuartoReport(
+        file,
+        base,
+        as_paths(base, extra_files),
+        output === nothing ? String[] : as_paths(base, output),
+        collect(String, quarto_args),
+        String(quarto),
+        restart,
+        render,
+    )
+    expected_outputs(report) # report problems when the pipeline is built
+    reads, dynamic = quarto_reads(file)
+    isempty(dynamic) ||
+        @warn "report `$name` reads targets whose names are not literals, so they are not " *
+            "its dependencies; list them in `deps`" reads = dynamic
+    return target(
+        name,
+        report;
+        deps = unique!(vcat(reads, collect(Symbol, deps))),
+        format = :file,
+        source = :(tar_quarto(1)),
+        seed,
+        kwargs...,
+    )
+end
+tar_quarto(path::AbstractString; kwargs...) = tar_quarto(report_name(path), path; kwargs...)
+
+"Reject two reports that render the same document: they would overwrite each other's outputs."
+function check_reports(targets)
+    seen = Dict{String, Symbol}()
+    for t in targets
+        t.f isa QuartoReport || continue
+        other = get(seen, t.f.path, nothing)
+        other === nothing ||
+            throw(PipelineError(
+                "targets `$other` and `$(t.name)` both render `$(t.f.path)`; a document can " *
+                    "only be rendered by one target",
+            ))
+        seen[t.f.path] = t.name
+    end
+end
+
 @testitem "quarto_text keeps executable Julia cells, inline code and prose" begin
     using Targets: quarto_text
     doc = """
@@ -392,4 +629,148 @@ end
     @test requested_formats(["--to", "pdf"]) == ["pdf"]
     @test requested_formats(["--to=html,docx"]) == ["html", "docx"]
     @test requested_formats(["-P", "a:1"]) === nothing
+end
+
+@testmodule QuartoFixtures begin
+    export report_pipeline, write_report
+
+    "A pipeline script with a report on `report.qmd`, rendered by a fake renderer."
+    report_pipeline(n = 1; unused = 2, options = "") = """
+    function fake(args, dir)
+        write(joinpath(dir, "args.txt"), join(args, "\\n"))
+        write(splitext(args[2])[1] * ".html", "rendered: " * read(args[2], String))
+    end
+    p = tar_pipeline(
+        target(:n, () -> $n),
+        target(:unused, () -> $unused),
+        tar_quarto(:report, "report.qmd"; render = fake$options),
+    )
+    """
+
+    write_report(dir, text; name = "report.qmd") = write(joinpath(dir, name), text)
+end
+
+@testitem "a report rebuilds when its text, a target it reads or its output changes" setup = [
+    SourceFixtures,
+    QuartoFixtures,
+] begin
+    mktempdir() do dir
+        doc(text) = "---\ntitle: r\n---\n$text\n\n```{julia}\ntar_read(:n)\n```\n"
+        write_report(dir, doc("Hello"))
+        @test build_source(report_pipeline(), dir).built == [:n, :unused, :report]
+        @test read_values(dir, :report) == (["report.html", "report.qmd"],)
+        @test read(joinpath(dir, "report.html"), String) == "rendered: " * doc("Hello")
+        @test isempty(build_source(report_pipeline(), dir).built)
+        touch(joinpath(dir, "report.qmd")) # a new modification time, same text
+        @test isempty(build_source(report_pipeline(), dir).built)
+        write_report(dir, doc("Hello again")) # prose only
+        @test outdated_source(report_pipeline(), dir) ==
+            [(name = :report, reason = :file_changed)]
+        @test build_source(report_pipeline(), dir).built == [:report]
+        @test build_source(report_pipeline(; unused = 3), dir).built == [:unused]
+        @test build_source(report_pipeline(5; unused = 3), dir).built == [:n, :report]
+        rm(joinpath(dir, "report.html"))
+        @test build_source(report_pipeline(5; unused = 3), dir).built == [:report]
+        write(joinpath(dir, "report.html"), "edited by hand")
+        @test build_source(report_pipeline(5; unused = 3), dir).built == [:report]
+    end
+end
+
+@testitem "a report's dependencies come from its code, and it renders into the build's store" setup = [
+    SourceFixtures,
+    QuartoFixtures,
+] begin
+    mktempdir() do dir
+        report(extra = "") = """
+        ```{julia}
+        #| eval: false
+        tar_read(:n)
+        ```
+        $extra
+        {{< include _part.qmd >}}
+        """
+        write_report(dir, report())
+        write_report(dir, "```{julia}\n@tar_load unused\n```\n"; name = "_part.qmd")
+        m, _ = load_source(report_pipeline(); dir)
+        p = Base.invokelatest(getproperty, m, :p)
+        @test Targets.get_target(p, :report).deps == [:unused]
+        @test build_source(report_pipeline(), dir).built == [:n, :unused, :report]
+        @test read_values(dir, :report) == (["report.html", "report.qmd", "_part.qmd"],)
+        args = readlines(joinpath(dir, "args.txt"))
+        @test args[1:2] == ["render", joinpath(dir, "report.qmd")]
+        @test "targets-store:" * joinpath(dir, "_targets") in args
+        @test "targets-rendering:true" in args
+        @test "--execute-daemon-restart" in args && "--cache-refresh" in args
+        write_report(dir, "```{julia}\n@tar_load unused\n```\nmore\n"; name = "_part.qmd")
+        @test build_source(report_pipeline(), dir).built == [:report] # an included file
+        write_report(dir, report("`{julia} tar_read(:n)`"))
+        @test outdated_source(report_pipeline(), dir) ==
+            [(name = :report, reason = :deps_changed)]
+        @test build_source(report_pipeline(), dir).built == [:report]
+        build_source(report_pipeline(; options = ", restart = false"), dir)
+        @test !("--execute-daemon-restart" in readlines(joinpath(dir, "args.txt")))
+    end
+end
+
+@testitem "tar_quarto validates its document and options" begin
+    using Targets: expected_outputs
+    mktempdir() do dir
+        qmd(name, text = "Hi\n") = (path = joinpath(dir, name); write(path, text); path)
+        a = qmd("summary.qmd")
+        t = tar_quarto(a)
+        @test t.name == :summary &&
+            t.format == :file &&
+            isempty(t.deps) &&
+            t.seed === nothing
+        @test expected_outputs(t.f) == [joinpath(dir, "summary.html")]
+        @test expected_outputs(tar_quarto(a; quarto_args = ["--to", "pdf"]).f) ==
+            [joinpath(dir, "summary.pdf")]
+        b = qmd("multi.qmd", "---\nformat:\n  html: default\n  docx: default\n---\n")
+        @test expected_outputs(tar_quarto(b).f) ==
+            joinpath.(dir, ["multi.html", "multi.docx"])
+        @test_throws "not a `.qmd`" tar_quarto(:x, qmd("x.md"))
+        @test_throws "does not exist" tar_quarto(:x, joinpath(dir, "none.qmd"))
+        @test_throws "cannot name a target" tar_quarto(qmd("01-intro.qmd"))
+        o = qmd("o.qmd", "---\noutput-file: other\n---\n")
+        @test_throws "output-file" tar_quarto(:x, o)
+        @test tar_quarto(:x, o; output = joinpath(dir, "other.html")).f.output ==
+            [joinpath(dir, "other.html")]
+        @test_throws "format `weird`" tar_quarto(
+            :x,
+            qmd("w.qmd", "---\nformat: weird\n---\n"),
+        )
+        @test_throws "cannot be set" tar_quarto(a; format = :jld2)
+        dyn = qmd("dyn.qmd", "```{julia}\ntar_read(name)\n```\n")
+        t = @test_logs (:warn, r"not literals") tar_quarto(dyn; deps = [:name])
+        @test t.deps == [:name]
+        @test_throws "both render" tar_pipeline(tar_quarto(:r1, a), tar_quarto(:r2, a))
+    end
+end
+
+@testitem "a report's command hash does not depend on where the project is" setup = [
+    SourceFixtures,
+] begin
+    function report_hash(options = "")
+        dir = mktempdir()
+        write(joinpath(dir, "r.qmd"), "text")
+        m, _ = load_source("t = tar_quarto(:r, \"r.qmd\"$options)"; dir)
+        return Targets.command_hash(Base.invokelatest(getproperty, m, :t))
+    end
+    @test report_hash() == report_hash()
+    @test report_hash().kind == :source
+    @test report_hash() != report_hash("; quarto_args = [\"--to\", \"pdf\"]")
+end
+
+@testitem "a real Quarto render (skipped without Quarto)" setup = [SourceFixtures] begin
+    if Sys.which("quarto") === nothing
+        @test_skip "quarto is not installed" == ""
+    else
+        mktempdir() do dir
+            write(joinpath(dir, "report.qmd"), "---\ntitle: Test\n---\n\nNo code here.\n")
+            code = "p = tar_pipeline(tar_quarto(:report, \"report.qmd\"))"
+            @test build_source(code, dir).built == [:report]
+            @test isfile(joinpath(dir, "report.html"))
+            @test isempty(build_source(code, dir).built)
+        end
+    end
 end

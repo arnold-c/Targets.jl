@@ -109,9 +109,10 @@ function attempt(job::Job)
     try
         job.load_error === nothing || throw(job.load_error)
         before = CHECK_MUTATION[] ? map(canonical_hash, job.args) : nothing
-        value, warnings = collecting_warnings(
-            () -> call_target(job.target.f, job.args, job.seed),
-        )
+        place = (store = job.store.root, root = job.root)
+        value, warnings = with(RUNNING_PLACE => place) do
+            collecting_warnings(() -> call_target(job.target.f, job.args, job.seed))
+        end
         seconds = elapsed()
         before === nothing || check_unmutated(job, before)
         consumer_value, vhash, stored = persist_value(job, value)
@@ -122,6 +123,15 @@ function attempt(job::Job)
         return JobResult(job, nothing, "", (;), elapsed(), e, catch_backtrace())
     end
 end
+
+"""
+The store and project root of the build running the current target, or
+`nothing` outside a build. Target functions that call out to other processes
+(such as a Quarto render) pass them on.
+"""
+const RUNNING_PLACE = ScopedValue{Union{Nothing, @NamedTuple{store::String, root::String}}}(
+    nothing,
+)
 
 "Whether `execute` checks that targets leave their arguments unchanged (`tar_make(; check_mutation)`)."
 const CHECK_MUTATION = ScopedValue(false)
