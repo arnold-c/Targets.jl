@@ -340,8 +340,9 @@ end
     add_panel!(position, state)
 
 A panel at `position` with a checkbox per section and per status present
-(unchecking one hides those targets), a "Hide selected" button, a "Show all"
-button that undoes all hiding, and a summary of the mouse controls.
+(unchecking one hides those targets), "Hide selected" and "Show only selected"
+buttons, a "Show all" button that undoes all hiding, and a summary of the mouse
+controls.
 """
 function add_panel!(position, state::NetworkState)
     data = state.data
@@ -374,6 +375,8 @@ function add_panel!(position, state::NetworkState)
 
     hide = Button(panel[next_row!(), 1:3]; label = "Hide selected", halign = :left)
     on(_ -> hide_selected!(state), hide.clicks)
+    only = Button(panel[next_row!(), 1:3]; label = "Show only selected", halign = :left)
+    on(_ -> show_only_selected!(state), only.clicks)
     show = Button(panel[next_row!(), 1:3]; label = "Show all", halign = :left)
     on(show.clicks) do _
         foreach(c -> c.checked[] = true, checkboxes)
@@ -404,6 +407,13 @@ end
 
 function hide_selected!(state::NetworkState)
     state.hidden[] = state.hidden[] .| state.selected[]
+    return nothing
+end
+
+"Hide every target outside the selection; with nothing selected, do nothing."
+function show_only_selected!(state::NetworkState)
+    any(state.selected[]) || return nothing
+    state.hidden[] = state.hidden[] .| .!state.selected[]
     return nothing
 end
 

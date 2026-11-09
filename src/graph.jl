@@ -315,9 +315,12 @@ be rearranged there:
 
 A side panel hides targets: uncheck a kind (constants, input files,
 computations, output files) or a status (up to date, outdated, ...) to hide
-those targets, use "Hide selected" for the selection, and "Show all" to undo
-all hiding. Edges to hidden targets are hidden too. By default (`interactive = nothing`) the
-figure is interactive exactly when GLMakie or WGLMakie is the active backend.
+those targets, use "Hide selected" to hide the selection or "Show only selected"
+to hide everything else, and "Show all" to undo all hiding. Edges to hidden
+targets are hidden too.
+
+By default (`interactive = nothing`) the figure is interactive exactly when
+GLMakie or WGLMakie is the active backend.
 `interactive = false` always gives a static figure, and `interactive = true`
 errors under any other backend.
 """
@@ -646,12 +649,13 @@ end
     (; data, fig, ax, state, at) = interactive_diamond(; statuses)
     shown() = data.nodes[state.visible[]]
     # the panel, in order: kinds present (constants, computations), then statuses
-    # present (up to date, outdated, not built); then Hide selected and Show all
+    # present (up to date, outdated, not built); then Hide selected, Show only
+    # selected and Show all
     constants, computations, uptodate, outdated, unbuilt = filter(
         c -> c isa Makie.Checkbox,
         fig.content,
     )
-    hide, show = filter(c -> c isa Makie.Button, fig.content)
+    hide, only_selected, show = filter(c -> c isa Makie.Button, fig.content)
     labels = only(filter(p -> p isa Makie.Text, ax.scene.plots))
     arrows = only(filter(p -> p isa Makie.Arrows2D, ax.scene.plots))
     left = findfirst(==(:left), data.nodes)
@@ -687,6 +691,21 @@ end
     show.clicks[] += 1
     @test shown() == data.nodes
     @test all(c -> c.checked[], (constants, computations, uptodate, outdated, unbuilt))
+
+    # Show only selected hides everything else, keeping the selection and its edges
+    click!(fig, figure_px(ax, at(:left)))
+    click!(fig, figure_px(ax, at(:both)); shift = true)
+    only_selected.clicks[] += 1
+    @test shown() == [:left, :both]
+    @test data.nodes[state.selected[]] == [:left, :both]
+    between = findfirst(==((left, findfirst(==(:both), data.nodes))), data.edges)
+    @test findall(!iszero, arrows[2][]) == [between]
+    # with nothing selected it does nothing, rather than hiding everything
+    click!(fig, figure_px(ax, Point2f(ax.finallimits[].origin) + Point2f(0.05, 0.05)))
+    only_selected.clicks[] += 1
+    @test shown() == [:left, :both]
+    show.clicks[] += 1
+    @test shown() == data.nodes
 
     # without statuses, only the kinds have checkboxes
     plain = interactive_diamond()
