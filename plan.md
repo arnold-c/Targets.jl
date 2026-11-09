@@ -510,7 +510,7 @@ M0–M5 are implemented, each as its own revision with its tests green (`juliati
 
 ## v0.2.0 roadmap
 
-v0.1.0 covers change detection, the store, files, branching and the helpers. Compared with R's `targets` and `tarchetypes`, the remaining gaps are listed below in priority order, one phase each. Reports as targets (`tar_quarto`/`tar_render`) are deliberately not planned. As in v0.1.0, each phase starts with the structural change it needs (with the existing tests still green) before the behavioral one, and ends with scenario test items.
+v0.1.0 covers change detection, the store, files, branching and the helpers. Compared with R's `targets` and `tarchetypes`, the remaining gaps are listed below in priority order, one phase each. Reports as targets are limited to rendering single Quarto documents (`tar_quarto`, Phase 18). As in v0.1.0, each phase starts with the structural change it needs (with the existing tests still green) before the behavioral one, and ends with scenario test items.
 
 ### Phase 10: Reproducible per-target RNG seeds
 
@@ -744,6 +744,28 @@ With parallel and distributed builds, `progress.log` alone is not enough to see 
 
 *Status: implemented in `src/progress.jl`. Besides the per-key statuses, a run writes `run_started` and `run_finished` events with an empty key; `run_finished` is also written when the run fails, so `tar_poll` knows when to stop. Branch keys (`name/id`) get their own events. The `worker` column is `local` until Phase 12.*
 
+### Phase 18: Quarto reports
+
+`tar_quarto(:report, "reports/report.qmd")` renders one Quarto document with the `quarto` CLI as a file target, rebuilt when the document, a file it includes, an output file, or a target it reads changes. Quarto projects (a directory with `_quarto.yml`), other notebook formats (`.ipynb`, percent scripts) and rendering one document several times with different parameters (R's `tar_quarto_rep`) are out of scope.
+
+**Decision: a report is one file target that tracks its sources by content.** The render function returns the output files followed by the source files (the `.qmd`, the files it includes with `{{< include >}}`, and `extra_files`), so the existing file-target rules apply: editing prose or a chunk is `:file_changed`, touching a file changes nothing, and a deleted or edited output rebuilds the report. Modification times are not compared with the last build: they change on checkout and on saving without edits. The sources are hashed before rendering and again after it; if they differ the render fails, so an edit made while Quarto runs is not recorded against older output.
+
+**Decision: dependencies are found statically, in Julia.** When the pipeline is built, the document and its includes are read, and the executable Julia cells (```` ```{julia} ```` blocks and inline `` `{julia} ...` `` code, except cells with `#| eval: false`) are parsed with JuliaSyntax. Calls `tar_read(:name, ...)` and `@tar_load a b` (qualified or not, options skipped) name the dependencies; a name that is not a literal gives a warning that points to `deps`, which adds dependencies by hand. No Quarto call is needed to build the pipeline, so `tar_outdated` and `tar_visnetwork` work without Quarto installed. Paths given to `tar_quarto` are relative to the directory of the script being loaded (`_targets.jl`), or the project root outside a script.
+
+**Decision: report targets do not receive upstream values.** The notebook reads the store itself, so the build loop skips loading values for a target whose function says so (`passes_values(f) = false`); such targets also do not hold upstream values in the in-memory cache.
+
+**Decision: the notebook finds the store in this order.** Inside a Quarto notebook, `tar_read` and `@tar_load` without `store` use, in order: (1) the store of the `tar_make` that is rendering the document, passed as Quarto metadata (`-M targets-store:<absolute path>`); (2) a `targets-store:` key in the document's front matter, relative to the document's directory; (3) the `store` preference of Targets (`LocalPreferences.toml`, relative to the project root), which is also the default store everywhere else; (4) `_targets` in the project root. The metadata is read through the Julia engine's `QuartoNotebookWorker.notebook_options()`. During a render started by `tar_make` the `on_outdated` check is skipped, since the build has just made the values it reads current. Only Quarto's `julia` engine (QuartoNotebookRunner) is supported for (1) and (2); with the Jupyter engine, pass `store` or use the preference.
+
+**Rendering.** `run` the `quarto` CLI (`quarto = "quarto"` keyword, checked with `Sys.which`) from the project root with `Cmd(...; dir)`, never `cd` (concurrent jobs share the working directory), passing `--execute-daemon-restart` (Quarto keeps a notebook's Julia worker alive between renders, so edited user code would otherwise stay loaded; `restart = false` opts out), `--cache-refresh` (the engine's cache ignores data changes) and `quarto_args`. Output files are `output` when given, else the document's stem with the extension of each format listed in its front matter (`html` by default), plus the `<stem>_files` directory when it exists. A failed render's error includes the end of Quarto's output. The command hash uses a fixed `source` expression plus the report's options, so upgrading Targets does not rebuild reports.
+
+**Parameters.** `params = (alpha = 0.1, draft = true)` adds `-P alpha:0.1 -P draft:true` (numbers, booleans, strings and symbols only); a change rebuilds the report. Two report targets may not render the same document, because they would share output files and Quarto's per-document worker.
+
+**Macro.** `@quarto report = "reports/report.qmd" [options]` inside `@pipeline`, or `@quarto "reports/report.qmd"` to take the name from the file's stem. Inferring reports from a `.qmd` string in `@target` was rejected: that line already means a constant string target, and the inference would only work for literal paths.
+
+**Known limits.** Functions called from report chunks are not tracked (only the chunk text is); rendering by hand rewrites the outputs, so the next build renders again.
+
+- **Tests.** With a fake renderer (a `render` keyword): editing prose rebuilds only the report; touching it rebuilds nothing; changing a target the report reads rebuilds it, and one it does not read leaves it alone; adding a `tar_read` changes its dependencies; editing an included file or deleting the output rebuilds it; `eval: false` cells are ignored; upstream values are not loaded; the store passed to the renderer is the build's. Unit tests for cell extraction, dependency detection, store resolution and `@quarto`. One real render, skipped when Quarto is not installed.
+
 ### Lower priority, not yet planned
 
 - Cloud or shared stores (S3, GCS): would need an object-storage backend behind `object_path`/`atomic_write`, which Phase 13's interface makes easier.
@@ -762,6 +784,7 @@ With parallel and distributed builds, `progress.log` alone is not enough to see 
 | **M10: Errors and debugging** | Phase 15 | Error-mode, retry and workspace scenarios |
 | **M11: Cues and progress** | Phases 16 and 17 | Cue reasons; events and `tar_progress` tests |
 | **M12: Distributed** | Phase 12 | Local `addprocs` builds match task-based builds |
+| **M13: Reports** | Phase 18 | Report scenarios with a fake renderer; one real render where Quarto is installed |
 
 ## Risks
 
