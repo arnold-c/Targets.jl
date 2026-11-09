@@ -285,8 +285,9 @@ Plot the pipeline with the same layout, colours and subgraph selection as
 (`using CairoMakie`, `GLMakie` or `WGLMakie`). File targets are squares, branching
 targets show their branch count, and colours show status.
 
-An interactive figure opens in a window (GLMakie) or a browser tab (WGLMakie),
-where it can be rearranged: drag a target to move it (its edges and label
+An interactive figure opens in a window (GLMakie) or fills a browser tab
+(WGLMakie), resizing with it (`figure_size` is only its starting size), and can
+be rearranged there: drag a target to move it (its edges and label
 follow), drag the background or use the right mouse button to pan, scroll to
 zoom, and ctrl-click to reset the view. By default (`interactive = nothing`) the
 figure is interactive exactly when GLMakie or WGLMakie is the active backend.
@@ -448,6 +449,10 @@ end
             Makie.CURRENT_BACKEND[] = Module(name)
             @test interactive_backend() == expected
         end
+        # WGLMakie fills the browser tab; GLMakie's window resizes the figure itself
+        ext = Base.get_extension(Targets, :TargetsMakieExt)
+        @test ext.screen_config(:WGLMakie) == (; resize_to = :body)
+        @test ext.screen_config(:GLMakie) == (;)
 
         Makie.CURRENT_BACKEND[] = missing
         @test !interactive_backend()

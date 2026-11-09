@@ -172,6 +172,11 @@ end
 
 Targets.interactive_backend() = backend_name() in INTERACTIVE_BACKENDS
 
+# Screen options for showing an interactive figure with `backend`. WGLMakie otherwise
+# draws the figure at its fixed size in a corner of the browser tab; `resize_to = :body`
+# makes it follow the tab's size. GLMakie's window already resizes the figure with it.
+screen_config(backend::Symbol) = backend === :WGLMakie ? (; resize_to = :body) : (;)
+
 function Targets.open_interactive(fig::Figure)
     Targets.interactive_backend() ||
         error(
@@ -179,7 +184,7 @@ function Targets.open_interactive(fig::Figure)
                 "active one is $(backend_name()): load `GLMakie` (opens a window) or `WGLMakie` " *
                 "(opens a browser tab), or activate one that is loaded, e.g. `GLMakie.activate!()`",
         )
-    display(fig)
+    display(fig; screen_config(backend_name())...)
     return fig
 end
 
