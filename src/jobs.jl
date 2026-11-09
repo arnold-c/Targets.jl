@@ -109,10 +109,7 @@ function attempt(job::Job)
     try
         job.load_error === nothing || throw(job.load_error)
         before = CHECK_MUTATION[] ? map(canonical_hash, job.args) : nothing
-        place = (store = job.store.root, root = job.root)
-        value, warnings = with(RUNNING_PLACE => place) do
-            collecting_warnings(() -> call_target(job.target.f, job.args, job.seed))
-        end
+        value, warnings = run_target(job)
         seconds = elapsed()
         before === nothing || check_unmutated(job, before)
         consumer_value, vhash, stored = persist_value(job, value)
@@ -132,6 +129,13 @@ The store and project root of the build running the current target, or
 const RUNNING_PLACE = ScopedValue{Union{Nothing, @NamedTuple{store::String, root::String}}}(
     nothing,
 )
+
+"Call a job's function where it can see its build (`RUNNING_PLACE`), collecting its warnings."
+function run_target(job::Job)
+    place = (store = job.store.root, root = job.root)
+    call() = collecting_warnings(() -> call_target(job.target.f, job.args, job.seed))
+    return with(call, RUNNING_PLACE => place)
+end
 
 "Whether `execute` checks that targets leave their arguments unchanged (`tar_make(; check_mutation)`)."
 const CHECK_MUTATION = ScopedValue(false)

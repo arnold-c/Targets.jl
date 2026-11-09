@@ -11,6 +11,9 @@ const INLINE_JULIA = r"`\{julia\}\s+([^`]+)`"
 const INCLUDE_SHORTCODE = r"\{\{<\s*include\s+(\"[^\"]+\"|'[^']+'|[^\s>]+)\s*>\}\}"
 const EVAL_FALSE = r"^\s*#\|\s*eval\s*:\s*false\s*$"
 
+"Capture group `i` of `m`, or an empty string if it did not participate."
+capture(m::RegexMatch, i::Integer) = something(m.captures[i], "")
+
 """
     QuartoText(cells, inline, prose)
 
@@ -24,9 +27,9 @@ struct QuartoText
 end
 
 "Whether a fence line `closing` ends the block opened by `fence`."
-closes(fence::AbstractString, closing::RegexMatch) = isempty(closing.captures[2]) &&
-    closing.captures[1][1] == fence[1] &&
-    length(closing.captures[1]) >= length(fence)
+closes(fence::AbstractString, closing::RegexMatch) = isempty(capture(closing, 2)) &&
+    capture(closing, 1)[1] == fence[1] &&
+    length(capture(closing, 1)) >= length(fence)
 
 """
     quarto_text(text)
@@ -47,11 +50,11 @@ function quarto_text(text::AbstractString)
                 push!(prose, line)
                 append!(
                     inline,
-                    (strip(c.captures[1]) for c in eachmatch(INLINE_JULIA, line))
+                    (strip(capture(c, 1)) for c in eachmatch(INLINE_JULIA, line))
                 )
             else
-                fence = m.captures[1]
-                cell = occursin(JULIA_CELL, m.captures[2]) ? String[] : nothing
+                fence = capture(m, 1)
+                cell = occursin(JULIA_CELL, capture(m, 2)) ? String[] : nothing
             end
         elseif m !== nothing && closes(fence, m)
             cell === nothing ||
@@ -68,7 +71,7 @@ end
 "Paths of the files `prose` includes with `{{< include ... >}}`, as written."
 function quarto_includes(prose::Vector{String})
     return String[
-        strip(m.captures[1], ['"', '\''])
+        strip(capture(m, 1), ['"', '\''])
         for line in prose
         for m in eachmatch(INCLUDE_SHORTCODE, line)
     ]
@@ -186,7 +189,7 @@ unquote(s::AbstractString) = strip(strip(replace(s, r"\s+#.*$" => "")), ['"', '\
 function front_matter_value(lines::Vector{String}, key::AbstractString)
     for l in lines
         m = match(Regex("^" * key * raw"\s*:\s*(.*)$"), l)
-        m === nothing || return unquote(m.captures[1])
+        m === nothing || return unquote(capture(m, 1))
     end
     return nothing
 end
@@ -211,7 +214,7 @@ function front_matter_formats(lines::Vector{String})
         lead == 0 && break
         indent = something(indent, lead)
         m = match(r"^\s*-?\s*([A-Za-z0-9_+\-]+)\s*:?", l)
-        lead == indent && m !== nothing && push!(formats, m.captures[1])
+        lead == indent && m !== nothing && push!(formats, capture(m, 1))
     end
     return isempty(formats) ? ["html"] : formats
 end
