@@ -70,16 +70,17 @@ const HELP = """
 
 The Observables a network is drawn from. `positions` are the node positions;
 `hidden` marks targets hidden by hand and `hidden_kinds` the sections and
-statuses hidden as a whole; `revealed` marks targets shown regardless (the
-dependencies or descendants of a selection). Together they give `visible`.
-`selected` marks the selected targets, and `box` is the area being selected
-while `boxing`.
+statuses hidden as a whole, which together give `unhidden`. `revealed` marks
+targets shown regardless (the dependencies or descendants of the unhidden
+targets), and `visible` is either. `selected` marks the selected targets, and
+`box` is the area being selected while `boxing`.
 """
 struct NetworkState
     data::NetworkData
     positions::Observable{Vector{Point2f}}
     hidden::Observable{Vector{Bool}}
     hidden_kinds::Observable{Set{Symbol}}
+    unhidden::Observable{Vector{Bool}}
     revealed::Observable{Vector{Bool}}
     visible::Observable{Vector{Bool}}
     selected::Observable{Vector{Bool}}
@@ -91,10 +92,11 @@ function NetworkState(data::NetworkData)
     n = length(data.nodes)
     hidden = Observable(fill(false, n))
     hidden_kinds = Observable(Set{Symbol}())
-    revealed = Observable(fill(false, n))
-    visible = lift(hidden, hidden_kinds, revealed) do hidden, kinds, revealed
-        Bool[revealed[i] || (!hidden[i] && !any(in(kinds), kinds_of(data, i))) for i in 1:n]
+    unhidden = lift(hidden, hidden_kinds) do hidden, kinds
+        Bool[!hidden[i] && !any(in(kinds), kinds_of(data, i)) for i in 1:n]
     end
+    revealed = Observable(fill(false, n))
+    visible = lift((u, r) -> u .| r, unhidden, revealed)
     selected = Observable(fill(false, n))
     # hidden targets leave the selection, so they cannot be moved or hidden unseen
     on(visible) do v
@@ -105,6 +107,7 @@ function NetworkState(data::NetworkData)
         Observable([Point2f(p...) for p in data.positions]),
         hidden,
         hidden_kinds,
+        unhidden,
         revealed,
         visible,
         selected,
@@ -369,8 +372,8 @@ end
 
 A panel at `position` with a checkbox per section and per status present
 (unchecking one hides those targets), "Hide selected" and "Show only selected"
-buttons, switches that show the dependencies or descendants of the selection
-(see [`reveal_toggle!`](@ref)), a "Show all" button that undoes all hiding, and
+buttons, switches that show the dependencies or descendants of the shown
+targets (see [`reveal_toggle!`](@ref)), a "Show all" button that undoes all hiding, and
 a summary of the mouse controls.
 """
 function add_panel!(position, state::NetworkState)
@@ -407,10 +410,11 @@ function add_panel!(position, state::NetworkState)
     on(_ -> hide_selected!(state), hide.clicks)
     only = Button(panel[next_row!(), 1:3]; label = "Show only selected", halign = :left)
     on(_ -> show_only_selected!(state), only.clicks)
+    heading!("Also show")
     reveals = Dict{Symbol, Vector{Bool}}()
     toggles = [
-        reveal_toggle!(panel, next_row!(), state, reveals, :upstream, "Show dependencies"),
-        reveal_toggle!(panel, next_row!(), state, reveals, :downstream, "Show descendants"),
+        reveal_toggle!(panel, next_row!(), state, reveals, :upstream, "Dependencies"),
+        reveal_toggle!(panel, next_row!(), state, reveals, :downstream, "Descendants"),
     ]
     show = Button(panel[next_row!(), 1:3]; label = "Show all", halign = :left)
     on(show.clicks) do _
@@ -444,12 +448,13 @@ end
 """
     reveal_toggle!(panel, row, state, reveals, direction, label)
 
-A switch that, when turned on, shows every target reachable from the selection
-in `direction` (`:upstream` for dependencies, `:downstream` for descendants),
-however it was hidden, and hides them again when turned off. The targets shown
-are those of the selection at the moment it is turned on, so selecting other
-targets afterwards (e.g. to move them) keeps them shown. `reveals` holds what
-each switch shows, so that the switches combine.
+A switch that, when turned on, shows every target reachable in `direction`
+(`:upstream` for dependencies, `:downstream` for descendants) from the targets
+not hidden by hand or by kind, however it was hidden, and hides them again when
+turned off. So after hiding some targets, it brings back those that the rest
+need (or feed). What it shows is fixed when it is turned on, and does not count
+what the other switch shows, so the two combine independently. `reveals` holds
+what each switch shows.
 """
 function reveal_toggle!(panel, row, state::NetworkState, reveals, direction, label)
     n = length(state.data.nodes)
@@ -458,7 +463,7 @@ function reveal_toggle!(panel, row, state::NetworkState, reveals, direction, lab
     Label(panel[row, 3], label; halign = :left)
     on(toggle.active) do active
         reveals[direction] = active ?
-            reachable(state.data.edges, state.selected[], direction) :
+            reachable(state.data.edges, state.unhidden[], direction) :
             fill(false, n)
         state.revealed[] = reduce(.|, values(reveals))
     end
