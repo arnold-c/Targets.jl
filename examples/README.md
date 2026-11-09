@@ -37,7 +37,9 @@ julia --project=. -e 'include("examples/demo.jl"); demo_setup()'
 ```
 
 This writes `examples/.demo/` and gives it an environment with this
-repository's Targets and CairoMakie. The project contains:
+repository's Targets and three Makie backends: CairoMakie (static figures),
+GLMakie (an interactive window) and WGLMakie (an interactive browser tab).
+The project contains:
 
 - `data/raw.csv`: an input file (`1.0 2.0 NaN 4.0`)
 - `analysis.jl`: helpers (`clean`, `score`, `summarize`, ...) and a `const SCALE`
@@ -53,14 +55,22 @@ repository's Targets and CairoMakie. The project contains:
 ```
 cd examples/.demo
 julia --project=.
-julia> using Targets, CairoMakie
+julia> using Targets, CairoMakie   # or GLMakie, or WGLMakie
 julia> tar_make()          # builds all 11 targets
 julia> tar_make()          # "up to date" for everything
 julia> tar_read(:report)   # (n = 3, total = 33.6)
 julia> tar_outdated()      # empty
 julia> print(tar_dot())    # Graphviz DOT of the DAG
 julia> tar_visnetwork()    # the DAG as a Makie figure, coloured by status
+julia> tar_visnetwork(; interactive = true)  # GLMakie or WGLMakie: drag targets, pan, zoom
 ```
+
+Pick the backend in the REPL: `_targets.jl` loads none, because loading a
+backend makes it the active one, and a `using CairoMakie` there would
+override a GLMakie or WGLMakie chosen in the REPL whenever the pipeline is
+loaded. To have `_targets.jl` load one anyway, pass it by name, e.g.
+`demo_setup(; makie = :GLMakie)` or `write_demo(; makie = :WGLMakie)`; it is
+kept when the files are regenerated, and `makie = nothing` removes it.
 
 ### Make edits
 
@@ -118,7 +128,7 @@ julia --project=. -e 'include("examples/demo.jl"); features_setup()'
 ```
 
 This writes `examples/.demo-features/` with an environment (Targets,
-CairoMakie, Distributed), a pipeline in `_targets.jl` and helpers in
+CairoMakie, GLMakie, WGLMakie, Distributed), a pipeline in `_targets.jl` and helpers in
 `features.jl`. It also creates two **marker files**, so that the first build
 shows the error handling:
 
@@ -152,7 +162,7 @@ Start Julia with threads, so that concurrent targets really run in parallel.
 ```
 cd examples/.demo-features
 julia --project=. -t 4
-julia> using Targets, CairoMakie
+julia> using Targets, GLMakie   # or CairoMakie, or WGLMakie
 julia> tar_make(; jobs = 4)
 ```
 
@@ -181,7 +191,7 @@ Look around:
 | `tar_rerun(:maybe)` | throws `no value today` again, in your session, with the same seed |
 | `tar_meta()` | the `noisy` row has `warnings = ["only 3 values"]` |
 | `tar_progress()` | the last run's events, one row per target and branch |
-| `tar_visnetwork()` | the DAG; `maybe` and `fragile_fits` coloured as errored |
+| `tar_visnetwork()` | the DAG; `maybe` and `fragile_fits` coloured as errored (`interactive = true` with GLMakie or WGLMakie to rearrange it) |
 
 ### Fix the failures
 
