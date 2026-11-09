@@ -31,6 +31,21 @@ struct GraphLayout
 end
 
 """
+    layer_numbers(p, nodes)
+
+Each target's layer: the length of the longest path to it from a root within
+`nodes`, which must be in build order (dependencies first).
+"""
+function layer_numbers(p::Pipeline, nodes::Vector{Symbol})
+    layer_of = Dict{Symbol, Int}()
+    for n in nodes
+        upstream = [layer_of[d] for d in get_target(p, n).deps if haskey(layer_of, d)]
+        layer_of[n] = isempty(upstream) ? 0 : 1 + maximum(upstream)
+    end
+    return layer_of
+end
+
+"""
     graph_layout(p, nodes)
 
 Layer each target by its longest path from a root within `nodes`, then order
@@ -44,11 +59,7 @@ function graph_layout(p::Pipeline, nodes::Vector{Symbol})
     for n in nodes, d in deps(n)
         push!(dependents[d], n)
     end
-    layer_of = Dict{Symbol, Int}()
-    for n in nodes
-        # build order: dependencies come first
-        layer_of[n] = isempty(deps(n)) ? 0 : 1 + maximum(layer_of[d] for d in deps(n))
-    end
+    layer_of = layer_numbers(p, nodes)
     depth = isempty(nodes) ? 0 : maximum(values(layer_of)) + 1
     layers = [filter(n -> layer_of[n] == i - 1, nodes) for i in 1:depth]
     declared = Dict(n => p.index[n] for n in nodes)
