@@ -766,6 +766,8 @@ With parallel and distributed builds, `progress.log` alone is not enough to see 
 
 - **Tests.** With a fake renderer (a `render` keyword): editing prose rebuilds only the report; touching it rebuilds nothing; changing a target the report reads rebuilds it, and one it does not read leaves it alone; adding a `tar_read` changes its dependencies; editing an included file or deleting the output rebuilds it; `eval: false` cells are ignored; upstream values are not loaded; the store passed to the renderer is the build's. Unit tests for cell extraction, dependency detection, store resolution and `@quarto`. One real render, skipped when Quarto is not installed.
 
+*Status: implemented in `src/quarto.jl` (`tar_quarto`, `QuartoReport`, the notebook store lookup), `src/macros.jl` (`@quarto`) and `src/store.jl` (the `store` preference); `passes_values` lives in `src/make.jl`, and jobs expose their store and root to target functions as `RUNNING_PLACE`. Not yet checked against a real Quarto install: that `-M targets-store:...` reaches `QuartoNotebookWorker.notebook_options()` in the notebook, and that `--execute-daemon-restart` and `--cache-refresh` are accepted by `quarto render`.*
+
 ### Lower priority, not yet planned
 
 - Cloud or shared stores (S3, GCS): would need an object-storage backend behind `object_path`/`atomic_write`, which Phase 13's interface makes easier.

@@ -125,6 +125,44 @@ packages that moved, and `track_manifest = true` rebuilds everything.
   adding, removing or reordering elements rebuilds only the new ones, and a change to
   one element rebuilds one branch (and, through `pattern = :branching_target`, one
   chain of branches). Downstream targets receive the vector of branch values.
+- **Quarto reports** (`tar_quarto`, or `@quarto` in `@pipeline`): see below.
+
+## Quarto reports
+
+A report renders one Quarto document with the `quarto` CLI:
+
+```julia
+@pipeline begin
+    @target model   = fit_model(clean_data)
+    @quarto report  = "reports/report.qmd"
+    @quarto "reports/appendix.qmd"  params = (draft = true,)   # named :appendix
+end
+# or: tar_quarto(:report, "reports/report.qmd"; quarto_args = ["--to", "pdf"])
+```
+
+Its dependencies are the targets its Julia cells (and inline `` `{julia} ...` ``
+code, and files it includes with `{{< include >}}`) read with `tar_read(:name)` or
+`@tar_load name`; they are found without running anything, so add any whose
+names are computed with `deps = [...]`. The report is rebuilt when one of those
+targets changes, when the text of the document or an included file changes (by
+content: touching it does nothing), or when an output file is deleted or edited.
+Functions called from the document are not tracked. `tar_read(:report)` gives the
+output paths followed by the source paths. Paths are relative to `_targets.jl`.
+
+Inside the document, `tar_read` and `@tar_load` read the store of the build that
+is rendering it, wherever the document's Julia environment is (this needs
+Quarto's `engine: julia`). When rendering by hand, name the store in the front
+matter, relative to the document, or set a `store` preference for the project:
+
+```yaml
+engine: julia
+targets-store: ../_targets
+```
+
+Each render restarts Quarto's Julia worker for the document, so edited code is
+never stale (`restart = false` keeps it), and refreshes Quarto's cache. Quarto
+projects (`_quarto.yml`) and rendering one document several times with different
+parameters are not supported.
 
 ## Running builds
 
@@ -172,6 +210,7 @@ explanation rather than record the wrong hashes. Load Revise, restart, or use
   ```toml
   [Targets]
   on_outdated = "error"   # or "warn" (default), "ignore"
+  store = "/scratch/me/_targets"   # the default store, relative to the project root
   ```
 
 - Put functions and types in a **named module or package**. Values are stored with
