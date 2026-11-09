@@ -252,21 +252,35 @@ end
 const MAKIE_ID = Base.PkgId(Base.UUID("ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"), "Makie")
 
 """
-    network_figure(data; figure_size) -> (figure, axis)
+    network_figure(data; figure_size, interactive = false) -> (figure, axis)
 
-An undecorated Makie figure and axis for `data`, with the pipeline drawn into it.
-Defined by TargetsMakieExt.
+An undecorated Makie figure and axis for `data`, with the pipeline drawn into it;
+with `interactive = true`, its nodes can be dragged. Defined by TargetsMakieExt.
 """
 function network_figure end
 
 """
+    open_interactive(figure) -> figure
+
+Display `figure` with an interactive Makie backend (GLMakie or WGLMakie), or
+explain how to load one. Defined by TargetsMakieExt.
+"""
+function open_interactive end
+
+"""
     tar_visnetwork(p::Pipeline; names = nothing, descendants = false, status = true,
-                   store = default_store_path(), root = nothing, figure_size = (900, 500))
+                   store = default_store_path(), root = nothing, figure_size = (900, 500),
+                   interactive = false)
 
 Plot the pipeline with the same layout, colours and subgraph selection as
 [`tar_dot`](@ref), returning a Makie `Figure`. Needs a Makie backend
-(`using CairoMakie` or `GLMakie`). File targets are squares, branching targets
-show their branch count, and colours show status.
+(`using CairoMakie`, `GLMakie` or `WGLMakie`). File targets are squares, branching
+targets show their branch count, and colours show status.
+
+`interactive = true` opens the figure in a window (GLMakie) or a browser tab
+(WGLMakie), where it can be rearranged: drag a target to move it (its edges and
+label follow), drag the background or use the right mouse button to pan, scroll
+to zoom, and ctrl-click to reset the view.
 """
 function tar_visnetwork(
     p::Pipeline;
@@ -276,6 +290,7 @@ function tar_visnetwork(
     store::Union{Store, AbstractString} = default_store_path(),
     root::Union{Nothing, AbstractString} = nothing,
     figure_size = (900, 500),
+    interactive::Bool = false,
 )
     haskey(Base.loaded_modules, MAKIE_ID) ||
         error(
@@ -288,8 +303,8 @@ function tar_visnetwork(
                 "Targets is `dev`ed by path): run `import Pkg; Pkg.resolve()` and restart Julia.",
         )
     data = network_data(p; names, descendants, status, store, root)
-    fig, _ = network_figure(data; figure_size)
-    return fig
+    fig, _ = network_figure(data; figure_size, interactive)
+    return interactive ? open_interactive(fig) : fig
 end
 tar_visnetwork(; script::AbstractString = default_script(), kwargs...) = tar_visnetwork(
     load_pipeline(script);
@@ -407,6 +422,80 @@ end
     @test tar_visnetwork(diamond(); names = [:left], status = false) isa Makie.Figure
     @test tar_visnetwork(diamond(); names = [:left], descendants = true, status = false) isa
         Makie.Figure
+end
+
+@testitem "tar_visnetwork asks for an interactive backend when interactive" setup = [
+    GraphFixtures,
+] begin
+    using Makie
+    if !(Makie.current_backend() isa Module)
+        # a shared process may have activated one
+        @test_throws "interactive Makie backend" tar_visnetwork(
+            diamond();
+            status = false,
+            interactive = true,
+        )
+    end
+end
+
+@testitem "interactive network figures drag nodes and pan the background" setup = [
+    GraphFixtures,
+] begin
+    using Makie
+    using Targets: network_data, network_figure
+    data = network_data(
+        diamond();
+        names = nothing,
+        descendants = false,
+        status = false,
+        store = "",
+        root = nothing,
+    )
+    fig, ax = network_figure(data; interactive = true)
+    @test !haskey(ax.interactions, :rectanglezoom) # left drags are ours
+    nodes = only(filter(p -> p isa Scatter, ax.scene.plots))
+    labels = only(filter(p -> p isa Makie.Text, ax.scene.plots))
+    arrows = only(filter(p -> p isa Makie.Arrows2D, ax.scene.plots))
+
+    # figure pixels of a data point, and a left-button drag between two of them
+    function figure_px(point)
+        lims, vp = ax.finallimits[], Makie.viewport(ax.scene)[]
+        return Tuple(vp.origin .+ (point .- lims.origin) .* widths(vp) ./ widths(lims))
+    end
+    function drag!(from, to)
+        ev = events(fig)
+        ev.mouseposition[] = from
+        ev.mousebutton[] = Makie.MouseButtonEvent(Mouse.left, Mouse.press)
+        for t in 0.25:0.25:1
+            ev.mouseposition[] = from .+ t .* (to .- from)
+        end
+        ev.mousebutton[] = Makie.MouseButtonEvent(Mouse.left, Mouse.release)
+    end
+
+    both = findfirst(==(:both), data.nodes)
+    start = nodes[1][][both]
+    arrows_before = copy(arrows[1][])
+    target = start + Point2f(-0.5, 1)
+    drag!(figure_px(start), figure_px(target))
+    @test nodes[1][][both] ≈ target atol = 0.01
+    @test labels[1][][both] ≈ target atol = 0.01 # the label follows
+    @test arrows[1][] != arrows_before           # and so do the edges
+    @test count(
+        i -> nodes[1][][i] != Point2f(data.positions[i]...),
+        eachindex(data.nodes),
+    ) ==
+        1
+
+    # dragging empty space pans instead
+    limits_before = ax.targetlimits[]
+    empty_space = Point2f(ax.finallimits[].origin) + Point2f(0.05, 0.05)
+    drag!(figure_px(empty_space), figure_px(empty_space) .+ (100, 0))
+    @test ax.targetlimits[].origin[1] < limits_before.origin[1]
+    @test nodes[1][][both] ≈ target atol = 0.01
+
+    # without interactive, the axis keeps its usual interactions
+    _, plain = network_figure(data)
+    @test haskey(plain.interactions, :rectanglezoom)
 end
 
 @testitem "tar_dot returns a DotGraph that prints its DOT text" setup = [
