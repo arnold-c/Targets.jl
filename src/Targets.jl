@@ -89,6 +89,8 @@ export tar_workspace, @tar_workspace, tar_rerun, tar_errored, tar_traceback
 include("replicate.jl")
 export tar_rep, tar_map_rep
 
+include("quarto.jl")
+
 include("dispatch.jl")
 export tar_slots
 
