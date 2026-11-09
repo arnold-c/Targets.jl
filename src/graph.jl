@@ -266,10 +266,12 @@ end
 const MAKIE_ID = Base.PkgId(Base.UUID("ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"), "Makie")
 
 """
-    network_figure(data; figure_size, interactive = false) -> (figure, axis)
+    network_figure(data; figure_size, interactive = false) -> (figure, axis, state)
 
-An undecorated Makie figure and axis for `data`, with the pipeline drawn into it;
-with `interactive = true`, its nodes can be dragged. Defined by TargetsMakieExt.
+An undecorated Makie figure and axis for `data`, with the pipeline drawn into it
+from the Observables in `state` (positions, selection, hidden targets); with
+`interactive = true`, targets can be dragged, selected and hidden. Defined by
+TargetsMakieExt.
 """
 function network_figure end
 
@@ -301,9 +303,20 @@ targets show their branch count, and colours show status.
 
 An interactive figure opens in a window (GLMakie) or fills a browser tab
 (WGLMakie), resizing with it (`figure_size` is only its starting size), and can
-be rearranged there: drag a target to move it (its edges and label
-follow), drag the background or use the right mouse button to pan, scroll to
-zoom, and ctrl-click to reset the view. By default (`interactive = nothing`) the
+be rearranged there:
+
+- drag a target to move it (its edges and label follow); dragging a selected
+  target moves the whole selection;
+- click a target to select it, shift-click to add it to the selection (or remove
+  it), shift-drag to select every target in an area, and click the background
+  to clear the selection;
+- drag the background or use the right mouse button to pan, scroll to zoom, and
+  ctrl-click to reset the view.
+
+A side panel hides targets: uncheck a kind (constants, input files,
+computations, output files) or a status (up to date, outdated, ...) to hide
+those targets, use "Hide selected" for the selection, and "Show all" to undo
+all hiding. Edges to hidden targets are hidden too. By default (`interactive = nothing`) the
 figure is interactive exactly when GLMakie or WGLMakie is the active backend.
 `interactive = false` always gives a static figure, and `interactive = true`
 errors under any other backend.
@@ -483,31 +496,56 @@ end
     end
 end
 
-@testitem "interactive network figures drag nodes and pan the background" setup = [
-    GraphFixtures,
-] begin
+@testmodule MouseFixtures begin
     using Makie
-    using Targets: network_data, network_figure
-    data = network_data(
-        diamond();
-        names = nothing,
-        descendants = false,
-        status = false,
-        store = "",
-        root = nothing,
-    )
-    fig, ax = network_figure(data; interactive = true)
-    @test !haskey(ax.interactions, :rectanglezoom) # left drags are ours
-    nodes = only(filter(p -> p isa Scatter, ax.scene.plots))
-    labels = only(filter(p -> p isa Makie.Text, ax.scene.plots))
-    arrows = only(filter(p -> p isa Makie.Arrows2D, ax.scene.plots))
+    using Targets
+    using Targets: NetworkData, network_data, network_figure
+    export interactive_diamond, figure_px, drag!, click!
 
-    # figure pixels of a data point, and a left-button drag between two of them
-    function figure_px(point)
+    """
+    An interactive figure of raw -> {left, right} -> both, plus `other`, as
+    `(; data, fig, ax, state, at)`, where `at(name)` is a target's current position.
+    `statuses` (in that node order) adds a status per target.
+    """
+    function interactive_diamond(; statuses = nothing)
+        p = tar_pipeline(
+            target(:raw, () -> 1),
+            target(:left, raw -> raw + 1),
+            target(:right, raw -> raw + 2),
+            target(:both, (left, right) -> left + right),
+            target(:other, () -> 5),
+        )
+        data = network_data(
+            p;
+            names = nothing,
+            descendants = false,
+            status = false,
+            store = "",
+            root = nothing,
+        )
+        fields = [getfield(data, f) for f in fieldnames(NetworkData)]
+        data = NetworkData(fields[1:(end - 1)]..., statuses)
+        fig, ax, state = network_figure(data; interactive = true)
+        at(name) = state.positions[][findfirst(==(name), data.nodes)]
+        return (; data, fig, ax, state, at)
+    end
+
+    "Figure pixels of `point` (data units) in `ax`."
+    function figure_px(ax, point)
         lims, vp = ax.finallimits[], Makie.viewport(ax.scene)[]
         return Tuple(vp.origin .+ (point .- lims.origin) .* widths(vp) ./ widths(lims))
     end
-    function drag!(from, to)
+
+    function with_shift(f, fig, shift::Bool)
+        ev = events(fig)
+        shift && (ev.keyboardbutton[] = Makie.KeyEvent(Keyboard.left_shift, Keyboard.press))
+        f()
+        shift &&
+            (ev.keyboardbutton[] = Makie.KeyEvent(Keyboard.left_shift, Keyboard.release))
+    end
+
+    "A left-button drag between two figure pixel positions."
+    drag!(fig, from, to; shift = false) = with_shift(fig, shift) do
         ev = events(fig)
         ev.mouseposition[] = from
         ev.mousebutton[] = Makie.MouseButtonEvent(Mouse.left, Mouse.press)
@@ -517,30 +555,142 @@ end
         ev.mousebutton[] = Makie.MouseButtonEvent(Mouse.left, Mouse.release)
     end
 
-    both = findfirst(==(:both), data.nodes)
-    start = nodes[1][][both]
+    "A left click at a figure pixel position."
+    click!(fig, at; shift = false) = with_shift(fig, shift) do
+        ev = events(fig)
+        ev.mouseposition[] = at
+        ev.mousebutton[] = Makie.MouseButtonEvent(Mouse.left, Mouse.press)
+        ev.mousebutton[] = Makie.MouseButtonEvent(Mouse.left, Mouse.release)
+    end
+end
+
+@testitem "interactive network figures drag nodes and pan the background" setup = [
+    MouseFixtures,
+] begin
+    using Makie
+    using Targets: network_figure
+    (; data, fig, ax, state, at) = interactive_diamond()
+    @test !haskey(ax.interactions, :rectanglezoom) # left drags are ours
+    labels = only(filter(p -> p isa Makie.Text, ax.scene.plots))
+    arrows = only(filter(p -> p isa Makie.Arrows2D, ax.scene.plots))
+
+    start = at(:both)
     arrows_before = copy(arrows[1][])
     target = start + Point2f(-0.5, 1)
-    drag!(figure_px(start), figure_px(target))
-    @test nodes[1][][both] ≈ target atol = 0.01
-    @test labels[1][][both] ≈ target atol = 0.01 # the label follows
-    @test arrows[1][] != arrows_before           # and so do the edges
-    @test count(
-        i -> nodes[1][][i] != Point2f(data.positions[i]...),
-        eachindex(data.nodes),
-    ) ==
-        1
+    drag!(fig, figure_px(ax, start), figure_px(ax, target))
+    @test at(:both) ≈ target atol = 0.01
+    @test labels[1][][findfirst(==(:both), data.nodes)] ≈
+        target atol = 0.01 # the label follows
+    @test arrows[1][] != arrows_before # and so do the edges
+    moved(i) = state.positions[][i] != Point2f(data.positions[i]...)
+    @test count(moved, eachindex(data.nodes)) == 1
 
     # dragging empty space pans instead
     limits_before = ax.targetlimits[]
     empty_space = Point2f(ax.finallimits[].origin) + Point2f(0.05, 0.05)
-    drag!(figure_px(empty_space), figure_px(empty_space) .+ (100, 0))
+    drag!(fig, figure_px(ax, empty_space), figure_px(ax, empty_space) .+ (100, 0))
     @test ax.targetlimits[].origin[1] < limits_before.origin[1]
-    @test nodes[1][][both] ≈ target atol = 0.01
+    @test at(:both) ≈ target atol = 0.01
 
-    # without interactive, the axis keeps its usual interactions
-    _, plain = network_figure(data)
+    # without interactive, the axis keeps its usual interactions and there is no panel
+    plain_fig, plain = network_figure(data)
     @test haskey(plain.interactions, :rectanglezoom)
+    @test !any(c -> c isa Makie.Button, plain_fig.content)
+end
+
+@testitem "interactive network figures select targets and move them together" setup = [
+    MouseFixtures,
+] begin
+    using Makie
+    (; data, fig, ax, state, at) = interactive_diamond()
+    selected() = data.nodes[state.selected[]]
+    px(name) = figure_px(ax, at(name))
+
+    # shift-drag around left and right (one above the other, between raw and both)
+    lo = min.(at(:left), at(:right)) .- 0.3
+    hi = max.(at(:left), at(:right)) .+ 0.3
+    drag!(fig, figure_px(ax, lo), figure_px(ax, hi); shift = true)
+    @test selected() == [:left, :right]
+    @test !state.boxing[] # the box is gone once the selection is made
+
+    # dragging a selected target moves the whole selection, and nothing else
+    before = Dict(n => at(n) for n in data.nodes)
+    drag!(fig, px(:left), figure_px(ax, at(:left) + Point2f(0.5, 0)))
+    moved = [n for n in data.nodes if !isapprox(at(n), before[n]; atol = 0.01)]
+    @test moved == [:left, :right]
+    @test at(:right) ≈ before[:right] + Point2f(0.5, 0) atol = 0.01
+
+    # dragging a target outside the selection moves only it
+    drag!(fig, px(:raw), figure_px(ax, at(:raw) + Point2f(0, 0.3)))
+    @test at(:left) ≈ before[:left] + Point2f(0.5, 0) atol = 0.01
+    @test selected() == [:left, :right]
+
+    # shift-click adds a target, and removes it again
+    click!(fig, px(:raw); shift = true)
+    @test selected() == [:raw, :left, :right]
+    click!(fig, px(:raw); shift = true)
+    @test selected() == [:left, :right]
+
+    # a plain click selects one target; on the background it clears the selection
+    click!(fig, px(:both))
+    @test selected() == [:both]
+    click!(fig, figure_px(ax, Point2f(ax.finallimits[].origin) + Point2f(0.05, 0.05)))
+    @test isempty(selected())
+end
+
+@testitem "interactive network figures hide targets by selection, kind and status" setup = [
+    MouseFixtures,
+] begin
+    using Makie
+    statuses = [:uptodate, :outdated, :outdated, :unbuilt, :uptodate]
+    (; data, fig, ax, state, at) = interactive_diamond(; statuses)
+    shown() = data.nodes[state.visible[]]
+    # the panel, in order: kinds present (constants, computations), then statuses
+    # present (up to date, outdated, not built); then Hide selected and Show all
+    constants, computations, uptodate, outdated, unbuilt = filter(
+        c -> c isa Makie.Checkbox,
+        fig.content,
+    )
+    hide, show = filter(c -> c isa Makie.Button, fig.content)
+    labels = only(filter(p -> p isa Makie.Text, ax.scene.plots))
+    arrows = only(filter(p -> p isa Makie.Arrows2D, ax.scene.plots))
+    left = findfirst(==(:left), data.nodes)
+
+    # hide the selection: its label and edges go, and it can no longer be grabbed
+    click!(fig, figure_px(ax, at(:left)))
+    hide.clicks[] += 1
+    @test shown() == [:raw, :right, :both, :other]
+    @test labels.color[][left].alpha == 0
+    touching = [k for (k, (i, j)) in enumerate(data.edges) if left in (i, j)]
+    @test all(iszero, arrows[2][][touching])
+    @test !any(iszero, arrows[2][][setdiff(eachindex(data.edges), touching)])
+    @test !any(state.selected[]) # hidden targets leave the selection
+    before = at(:left)
+    drag!(fig, figure_px(ax, at(:left)), figure_px(ax, at(:left) + Point2f(0.4, 0)))
+    @test at(:left) == before # the drag panned instead
+
+    # by kind, on top of the hand-hidden target
+    computations.checked[] = false
+    @test shown() == [:raw, :other]
+    computations.checked[] = true
+    @test shown() == [:raw, :right, :both, :other]
+
+    # by status; selected targets that get hidden leave the selection
+    click!(fig, figure_px(ax, at(:right)))
+    outdated.checked[] = false
+    @test shown() == [:raw, :both, :other]
+    @test !any(state.selected[])
+    uptodate.checked[] = false
+    @test shown() == [:both]
+
+    # Show all undoes every kind of hiding
+    show.clicks[] += 1
+    @test shown() == data.nodes
+    @test all(c -> c.checked[], (constants, computations, uptodate, outdated, unbuilt))
+
+    # without statuses, only the kinds have checkboxes
+    plain = interactive_diamond()
+    @test count(c -> c isa Makie.Checkbox, plain.fig.content) == 2
 end
 
 @testitem "tar_dot returns a DotGraph that prints its DOT text" setup = [
@@ -574,9 +724,11 @@ end
     @test sort(d.edges) == [(1, 2), (1, 3), (2, 4), (3, 4)]
     @test d.labels == string.(d.nodes)
     @test length(d.positions) == 5 && !any(d.is_file)
-    @test d.sections == [:constants, :computations, :computations, :computations, :constants]
+    @test d.sections ==
+        [:constants, :computations, :computations, :computations, :constants]
     @test d.statuses === nothing
-    mktempdir() do dir # nothing built yet
+    mktempdir() do dir
+        # nothing built yet
         s = network_data(
             diamond();
             names = [:left],
