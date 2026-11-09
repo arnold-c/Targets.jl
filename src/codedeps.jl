@@ -175,10 +175,12 @@ function enqueue_user_methods!(w::Walk, v)
 end
 
 function type_hash(T::DataType)
+    # Abstract types (and e.g. varargs tuples) have no definite fields.
+    names = Base.datatype_fieldcount(T) === nothing ? Symbol[] : collect(fieldnames(T))
     return canonical_hash((
         nameof(T),
         nameof(supertype(T)),
-        collect(fieldnames(T)),
+        names,
         [type_string(ft) for ft in T.types],
         [p isa Type ? type_string(p) : string(p) for p in T.parameters],
         ismutabletype(T),
@@ -445,6 +447,17 @@ end
     """,
     )[1]
     @test ctor("a") != ctor("a + 1")
+    abstract_code(super) = reach(
+        """
+    abstract type Shape end
+    abstract type Round <: $super end
+    struct Circle <: Round
+        r::Float64
+    end
+    t = target(:a, () -> Circle(1.0))
+    """,
+    )[1]
+    @test abstract_code("Shape") != abstract_code("Any")
     h, d = reach("t = target(:a, () -> sum(map(abs, [1, -2])))")
     @test h == reach("t = target(:a, () -> sum(map(abs, [1, -2])) + 0)")[1]
     @test length(project_files(d)) == 1 # only the file defining the target itself
