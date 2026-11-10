@@ -141,12 +141,14 @@ end
 ```
 
 Its dependencies are the targets its Julia cells (and inline `` `{julia} ...` ``
-code, and files it includes with `{{< include >}}`) read with `tar_read(:name)` or
+code, documents it includes with `{{< include >}}`, and Julia files its code
+loads with `include("analysis.jl")`, recursively) read with `tar_read(:name)` or
 `@tar_load name`; they are found without running anything, so add any whose
-names are computed with `deps = [...]`. The report is rebuilt when one of those
-targets changes, when the text of the document or an included file changes (by
-content: touching it does nothing), or when an output file is deleted or edited.
-Functions called from the document are not tracked. `tar_read(:report)` gives the
+names are computed with `deps = [...]` (and computed include paths with
+`extra_files`). The report is rebuilt when one of those targets changes, when
+the text of the document or an included file changes (by content: touching it
+does nothing), or when an output file is deleted or edited. Code loaded from
+packages (`using MyAnalysis`) is not tracked. `tar_read(:report)` gives the
 output paths followed by the source paths. Paths are relative to `_targets.jl`.
 
 Inside the document, `tar_read` and `@tar_load` read the store of the build that
@@ -160,7 +162,9 @@ targets-store: ../_targets
 ```
 
 Each render restarts Quarto's Julia worker for the document, so edited code is
-never stale (`restart = false` keeps it), and refreshes Quarto's cache. Quarto
+never stale (`restart = false` keeps it), and refreshes Quarto's cache. Quarto's
+output is shown only when a render fails; `quiet = false` prints it in the REPL
+as the render runs. Quarto
 projects (`_quarto.yml`) and rendering one document several times with different
 parameters are not supported.
 

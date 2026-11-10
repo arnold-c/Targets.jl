@@ -11,8 +11,9 @@ const INLINE_JULIA = r"`\{julia\}\s+([^`]+)`"
 const INCLUDE_SHORTCODE = r"\{\{<\s*include\s+(\"[^\"]+\"|'[^']+'|[^\s>]+)\s*>\}\}"
 const EVAL_FALSE = r"^\s*#\|\s*eval\s*:\s*false\s*$"
 
-"Capture group `i` of `m`, or an empty string if it did not participate."
-capture(m::RegexMatch, i::Integer) = something(m.captures[i], "")
+# Untyped `m`: packages such as StringViews return their own match types.
+"Capture group `i` of regex match `m`, or an empty string if it did not participate."
+capture(m, i::Integer) = something(m.captures[i], "")
 
 """
     QuartoText(cells, inline, prose)
@@ -27,7 +28,7 @@ struct QuartoText
 end
 
 "Whether a fence line `closing` ends the block opened by `fence`."
-closes(fence::AbstractString, closing::RegexMatch) = isempty(capture(closing, 2)) &&
+closes(fence::AbstractString, closing) = isempty(capture(closing, 2)) &&
     capture(closing, 1)[1] == fence[1] &&
     length(capture(closing, 1)) >= length(fence)
 
@@ -77,22 +78,52 @@ function quarto_includes(prose::Vector{String})
     ]
 end
 
-"""
-    quarto_sources(path)
+is_julia_file(file::AbstractString) = endswith(lowercase(file), ".jl")
 
-The absolute paths of a document and of every file it includes, recursively,
-in the order they are first reached. Included paths are relative to the file
-that includes them; an include that does not exist is an error.
 """
-function quarto_sources(path::AbstractString, found = String[])
+    source_code(file)
+
+The executable Julia code of a source file: all of a `.jl` file, or the
+executable cells and inline code of a document.
+"""
+function source_code(file::AbstractString)
+    text = read(file, String)
+    is_julia_file(file) && return [text]
+    parts = quarto_text(text)
+    return vcat(parts.cells, parts.inline)
+end
+
+"""
+    quarto_sources(path; dynamic = String[])
+
+The absolute paths of a document and of every file it uses, recursively, in
+the order they are first reached: documents it includes with
+`{{< include >}}`, and Julia files its code (or theirs) loads with
+`include("...")` or `includet("...")`. Included paths are relative to the file
+that includes them; an include that does not exist is an error. Includes
+whose path is not a literal are pushed to `dynamic`, as text.
+"""
+function quarto_sources(
+    path::AbstractString,
+    found = String[];
+    dynamic::Vector{String} = String[],
+)
     file = normpath(abspath(path))
     file in found && return found
     isfile(file) || error("Quarto document `$file` does not exist")
     push!(found, file)
-    for inc in quarto_includes(quarto_text(read(file, String)).prose)
+    linked = is_julia_file(file) ?
+        String[] :
+        quarto_includes(quarto_text(read(file, String)).prose)
+    for code in source_code(file)
+        paths, dyn = code_includes(code; file)
+        append!(linked, paths)
+        append!(dynamic, dyn)
+    end
+    for inc in linked
         target = normpath(joinpath(dirname(file), inc))
         isfile(target) || error("`$file` includes `$inc`, which does not exist")
-        quarto_sources(target, found)
+        quarto_sources(target, found; dynamic)
     end
     return found
 end
@@ -140,6 +171,52 @@ function read_targets!(found::Vector{Symbol}, dynamic::Vector{String}, ex)
     return nothing
 end
 
+const INCLUDE_CALLS = (:include, :includet)
+
+# A path written as a literal: `"a.jl"`, or `joinpath(@__DIR__, "a", "b.jl")`
+# (relative to the including file either way). `nothing` otherwise.
+literal_path(p::AbstractString) = String(p)
+function literal_path(p::Expr)
+    (Meta.isexpr(p, :call) && is_named(p.args[1], :joinpath)) || return nothing
+    parts = p.args[2:end]
+    (
+        !isempty(parts) &&
+            Meta.isexpr(parts[1], :macrocall) &&
+            parts[1].args[1] === Symbol("@__DIR__") &&
+            all(x -> x isa AbstractString, parts[2:end])
+    ) ||
+        return nothing
+    return joinpath(String.(parts[2:end])...)
+end
+literal_path(_) = nothing
+
+"""
+    include_paths!(paths, dynamic, ex)
+
+Collect into `paths` the files `ex` loads with `include("...")`,
+`Base.include(mod, "...")` or `includet("...")`, and into `dynamic` the
+includes (as text) whose path is not a literal.
+"""
+function include_paths!(paths::Vector{String}, dynamic::Vector{String}, ex)
+    ex isa Expr || return nothing
+    Meta.isexpr(ex, :quote) && return nothing
+    if Meta.isexpr(ex, :call) && any(n -> is_named(ex.args[1], n), INCLUDE_CALLS)
+        args = positional_args(ex)
+        path = isempty(args) ? nothing : literal_path(args[end])
+        path === nothing ? push!(dynamic, string(ex)) : push!(paths, path)
+        return nothing
+    end
+    foreach(a -> include_paths!(paths, dynamic, a), ex.args)
+    return nothing
+end
+
+"`(paths, dynamic)`: the files Julia `code` includes (see [`include_paths!`](@ref))."
+function code_includes(code::AbstractString; file::AbstractString = "none")
+    paths, dynamic = String[], String[]
+    include_paths!(paths, dynamic, Meta.parseall(code; filename = file))
+    return unique!(paths), unique!(dynamic)
+end
+
 """
     code_reads(code; file = "none")
 
@@ -156,14 +233,14 @@ end
 """
     quarto_reads(path)
 
-`(names, dynamic)` for a document and the files it includes (see
-[`code_reads`](@ref)).
+`(names, dynamic)` for a document and the files it uses (see
+[`code_reads`](@ref) and [`quarto_sources`](@ref)); `dynamic` also holds the
+includes whose path is not a literal.
 """
 function quarto_reads(path::AbstractString)
     found, dynamic = Symbol[], String[]
-    for file in quarto_sources(path)
-        parts = quarto_text(read(file, String))
-        for code in vcat(parts.cells, parts.inline)
+    for file in quarto_sources(path; dynamic)
+        for code in source_code(file)
             names, dyn = code_reads(code; file)
             append!(found, names)
             append!(dynamic, dyn)
@@ -292,6 +369,7 @@ struct QuartoReport
     quarto_args::Vector{String}
     quarto::String
     restart::Bool
+    quiet::Bool
     runner::Any
 end
 
@@ -305,7 +383,7 @@ portable(r::QuartoReport, path::AbstractString) = replace(
 
 # What goes into a report's command hash: its options, with paths relative to
 # `base` so that a moved project does not rebuild, and without the machine's
-# Quarto location or the runner.
+# Quarto location, the runner or `quiet`, which do not change the output.
 closure_captures(r::QuartoReport) = (
     path = portable(r, r.path),
     extra_files = [portable(r, f) for f in r.extra_files],
@@ -353,8 +431,19 @@ function quarto_cli_args(r::QuartoReport, store::AbstractString)
     return append!(args, r.quarto_args)
 end
 
-"Run the `quarto` CLI with `args` in `dir`; a failure's error ends with Quarto's output."
-function run_quarto(quarto::AbstractString, args::Vector{String}, dir::AbstractString)
+"""
+    run_quarto(quarto, args, dir; echo = devnull)
+
+Run the executable `quarto` with `args` in `dir`, copying its output (stdout
+and stderr) to `echo` line by line as it arrives. A failure's error ends with
+that output.
+"""
+function run_quarto(
+    quarto::AbstractString,
+    args::Vector{String},
+    dir::AbstractString;
+    echo::IO = devnull,
+)
     exe = Sys.which(quarto)
     exe === nothing &&
         error(
@@ -362,13 +451,24 @@ function run_quarto(quarto::AbstractString, args::Vector{String}, dir::AbstractS
                 "pass its path as `quarto = ...`",
         )
     output = IOBuffer()
+    pipe = Pipe()
+    process = run(
+        pipeline(Cmd(`$exe $args`; dir); stdout = pipe, stderr = pipe);
+        wait = false,
+    )
+    close(pipe.in)
     try
-        run(pipeline(Cmd(`$exe $args`; dir); stdout = output, stderr = output))
-    catch e
-        e isa ProcessFailedException || rethrow()
-        text = String(take!(output))
-        error("quarto render failed:\n" * last(text, 3000))
+        for line in eachline(pipe; keep = true)
+            write(output, line)
+            write(echo, line)
+            flush(echo)
+        end
+        wait(process)
+    catch
+        kill(process) # interrupted: do not leave Quarto running
+        rethrow()
     end
+    success(process) || error("quarto render failed:\n" * last(String(take!(output)), 3000))
     return nothing
 end
 
@@ -383,7 +483,11 @@ function (r::QuartoReport)(_...)
     before = map(path_hash, sources)
     outputs = expected_outputs(r)
     args = quarto_cli_args(r, store)
-    r.runner === nothing ? run_quarto(r.quarto, args, root) : r.runner(args, root)
+    if r.runner === nothing
+        run_quarto(r.quarto, args, root; echo = r.quiet ? devnull : stdout)
+    else
+        r.runner(args, root)
+    end
     map(path_hash, sources) == before ||
         error("`$(r.path)` or a file it uses changed while it was rendered; build again")
     absent = filter(!ispath, outputs)
@@ -444,7 +548,7 @@ as_paths(base, paths) = String[normpath(joinpath(base, p)) for p in paths]
 """
     tar_quarto([name,] path; deps = [], extra_files = [], output = nothing,
                params = (;), quarto_args = [], quarto = "quarto", restart = true,
-               kwargs...)
+               quiet = true, kwargs...)
 
 A target that renders the Quarto document `path` (a `.qmd` file) with the
 `quarto` CLI. `name` defaults to the file's stem (`reports/summary.qmd` is
@@ -452,18 +556,21 @@ A target that renders the Quarto document `path` (a `.qmd` file) with the
 script (`_targets.jl`).
 
 Its dependencies are the targets the document's executable Julia cells (and
-inline Julia code, and the files it includes with `{{< include >}}`) read with
-`tar_read(:name)` or `@tar_load name`, found without running anything, plus
-`deps`. Cells marked `#| eval: false` are skipped, and reads whose name is not
-a literal give a warning: list those in `deps`. The values are not passed in:
-the document reads them from the store, which is the one `tar_make` is building
-(see [`tar_read`](@ref)).
+inline Julia code, the documents it includes with `{{< include >}}`, and the
+Julia files its code loads with `include("file.jl")`, `includet` or
+`include(joinpath(@__DIR__, ...))`, recursively) read with `tar_read(:name)`
+or `@tar_load name`, found without running anything, plus `deps`. Cells
+marked `#| eval: false` are skipped. Reads whose name, and includes whose path,
+is not a literal give a warning: list those in `deps` and `extra_files`. The
+values are not passed in: the document reads them from the store, which is the
+one `tar_make` is building (see [`tar_read`](@ref)).
 
 It is a file target whose files are the outputs followed by the document, the
-files it includes and `extra_files` (e.g. a bibliography). So it is rebuilt
-when any of them changes in content (not when they are only touched), when an
-output is deleted, or when a target it reads changes. Functions called from
-the document's code are not tracked.
+files it includes (documents and Julia files) and `extra_files` (e.g. a
+bibliography). So it is rebuilt when any of them changes in content (not when
+the files are only touched), when an output is deleted, or when a target it
+reads changes. Code the document loads from packages (`using MyAnalysis`) is
+not tracked; code in the Julia files it includes is, by their text.
 
 The outputs are `output` when given, else the document's stem with the
 extension of each format in its front matter (or chosen with `--to` in
@@ -473,7 +580,9 @@ and symbols) sets the document's parameters (`quarto render -P key:value`),
 which it declares with defaults under `params:` in its front matter; changing
 one rebuilds the report. Each render restarts Quarto's Julia worker for the document, so
 edited code is never stale (`restart = false` keeps it, which is faster),
-and refreshes Quarto's cache. `quarto` is the Quarto executable. Other keyword
+and refreshes Quarto's cache. `quiet = false` prints Quarto's output in the
+REPL while it renders; by default it is shown only if the render fails. Neither
+changes when the report rebuilds. `quarto` is the Quarto executable. Other keyword
 arguments go to [`target`](@ref) (`cue`, `error`, `retries`, ...).
 """
 function tar_quarto(
@@ -486,6 +595,7 @@ function tar_quarto(
     quarto_args = String[],
     quarto::AbstractString = "quarto",
     restart::Bool = true,
+    quiet::Bool = true,
     render = nothing,
     seed = nothing,
     kwargs...,
@@ -508,13 +618,14 @@ function tar_quarto(
         collect(String, quarto_args),
         String(quarto),
         restart,
+        quiet,
         render,
     )
     expected_outputs(report) # report problems when the pipeline is built
     reads, dynamic = quarto_reads(file)
     isempty(dynamic) ||
-        @warn "report `$name` reads targets whose names are not literals, so they are not " *
-            "its dependencies; list them in `deps`" reads = dynamic
+        @warn "report `$name` reads targets or includes files whose names are not " *
+            "literals, so they are not tracked; list them in `deps` or `extra_files`" calls = dynamic
     return target(
         name,
         report;
@@ -925,6 +1036,44 @@ end
         @test outdated_source(code(0.3), dir) ==
             [(name = :report, reason = :command_changed)]
         @test build_source(code(0.3), dir).built == [:report]
+    end
+end
+
+@testitem "run_quarto streams the output it captures, and reports failures" begin
+    using Targets: run_quarto
+    if Sys.iswindows()
+        @test_skip "needs sh" == ""
+    else
+        mktempdir() do dir
+            echo = IOBuffer()
+            script = "echo one; echo two 1>&2; pwd"
+            @test run_quarto("sh", ["-c", script], dir; echo) === nothing
+            lines = split(String(take!(echo)), '\n'; keepempty = false)
+            @test sort(lines[1:2]) == ["one", "two"]
+            @test realpath(lines[3]) == realpath(dir)                     # runs in `dir`
+            @test run_quarto("sh", ["-c", "echo quiet"], dir) === nothing # default: devnull
+            failure = "echo first; echo last 1>&2; exit 3"
+            @test_throws r"quarto render failed:\n.*first.*last"s run_quarto(
+                "sh",
+                ["-c", failure],
+                dir,
+            )
+            @test_throws "cannot find the Quarto CLI" run_quarto(
+                "no-such-quarto",
+                String[],
+                dir,
+            )
+        end
+    end
+end
+
+@testitem "quiet does not change a report's command hash" begin
+    mktempdir() do dir
+        path = joinpath(dir, "r.qmd")
+        write(path, "text")
+        loud = tar_quarto(:r, path; quiet = false)
+        @test !loud.f.quiet && tar_quarto(:r, path).f.quiet
+        @test Targets.command_hash(loud) == Targets.command_hash(tar_quarto(:r, path))
     end
 end
 
