@@ -46,6 +46,8 @@ export Target, target
 include("pipeline.jl")
 export Pipeline, tar_pipeline
 
+include("declarations.jl")
+
 include("static.jl")
 export tar_map, tar_combine
 

@@ -30,13 +30,13 @@ end
 """
     tar_pipeline(targets...; track = [], seed = 0)
 
-Build a [`Pipeline`](@ref). Arguments may be targets or (nested) collections of
-targets, so comprehensions and [`tar_map`](@ref) results can be passed directly.
-`seed` is the pipeline seed: changing it rebuilds every target with
-`seed = :auto`.
+Build a [`Pipeline`](@ref). Arguments may be targets, [`@targets`](@ref)
+fragments or (nested) collections of them, so comprehensions and
+[`tar_map`](@ref) results can be passed directly. `seed` is the pipeline seed:
+changing it rebuilds every target with `seed = :auto`.
 """
 tar_pipeline(ts...; track = [], seed::Integer = 0) = Pipeline(
-    flatten_targets(ts),
+    assemble(declarations(ts)),
     collect(Any, track),
     Int(seed),
 )
