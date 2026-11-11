@@ -244,6 +244,31 @@ function consider_binding!(w::Walk, mod::Module, name::Symbol)
     return nothing
 end
 
+"The methods of a target's own function, whose hash is the command hash."
+own_methods(f) = collect(methods(f))
+own_methods(c::MacroCommand) = collect(methods(c.body))
+
+"""
+Follow the values a `@target` takes from where it was declared: its body
+receives them as arguments, so its lowered code does not name them.
+"""
+consider_scope!(::Walk, f) = nothing
+function consider_scope!(w::Walk, c::MacroCommand)
+    scope = scope_values(c)
+    for (name, input) in zip(c.refs, c.inputs)
+        input === nothing || continue
+        v = getfield(scope, name)
+        if latest_isdefined(c.mod, name) && latest_getglobal(c.mod, name) === v
+            consider_binding!(w, c.mod, name)
+        elseif v isa Type
+            consider_type!(w, v) # a local; its value is part of the command hash
+        elseif !(v isa Module)
+            enqueue_user_methods!(w, v)
+        end
+    end
+    return nothing
+end
+
 """
     code_hash(d::Discovery, t::Target)
 
@@ -260,10 +285,11 @@ function code_hash(d::Discovery, t::Target)
         Base.IdSet{Any}(),
         String[],
     )
-    own = collect(methods(t.f))
+    own = own_methods(t.f)
     union!(w.own, own)
     union!(w.seen_methods, own)
     append!(w.queue, own)
+    consider_scope!(w, t.f)
     while !isempty(w.queue)
         m = pop!(w.queue)
         is_own = m in w.own

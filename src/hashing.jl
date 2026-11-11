@@ -103,6 +103,10 @@ function closure_captures(f)
         for i in 1:nfields(f)
     )
 end
+# A `@target`'s variables from enclosing scopes (such as a `@map` argument) are
+# captured by its body or, when the target might have named a target instead,
+# by its scope.
+closure_captures(c::MacroCommand) = (closure_captures(c.body), closure_captures(c.scope))
 
 # Whether a target stores files or an object. (Recorded as `:jld2` for objects so
 # that hashes from before storage formats existed stay valid; the storage format

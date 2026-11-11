@@ -3,6 +3,7 @@ module Targets
 using CodeTracking: CodeTracking
 using Dates: Dates
 using Downloads: Downloads
+using ExpressionExplorer: ExpressionExplorer
 using Graphs:
     SimpleDiGraph,
     add_edge!,
@@ -109,7 +110,7 @@ export tar_list, TargetList
 include("api.jl")
 
 include("macros.jl")
-export @pipeline, @target, @quarto
+export @pipeline, @targets, @target, @quarto, Fragment
 export tar_read, @tar_load, tar_manifest, tar_invalidate, tar_delete, tar_prune, tar_destroy
 
 end

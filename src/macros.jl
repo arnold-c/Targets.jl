@@ -1,19 +1,26 @@
 ## Macro sugar
 ##
-## `@pipeline` rewrites a block of `@target name = expression options...` lines
-## into `tar_pipeline(target(...), ...)`. It adds no behaviour of its own.
+## `@targets` turns a block of `@target name = expression options...` lines into
+## a `Fragment` of declarations, and `@pipeline` passes one to `tar_pipeline`.
+## Each expression's free names are found with ExpressionExplorer (after
+## expanding its macros), so names it binds itself (comprehension variables,
+## lambda arguments, `let` and `do` bindings) are never dependencies. Names the
+## block binds (assignments) are captured as usual; every other free name is
+## resolved when the pipeline is assembled: a target, or else whatever the name
+## means where the block was written.
 
 """
-    @target name = expression [format = ...] [pattern = ...] [cue = ...] [seed = ...]
+    @target name = expression [format = ...] [pattern = ...] [cue = ...] [seed = ...] ...
 
-Declare a target inside [`@pipeline`](@ref). Dependencies are the other targets
-named in `expression`. Outside `@pipeline` it is an error, because dependency
-detection needs to know every target name in the pipeline.
+Declare a target inside [`@targets`](@ref) or [`@pipeline`](@ref). Its
+dependencies are the targets `expression` refers to, wherever they are
+declared; the options are the keyword arguments of [`target`](@ref). Elsewhere
+it is an error.
 """
 macro target(args...)
     error(
-        "@target can only be used inside @pipeline; use `target(:name, f)` to declare a " *
-            "target on its own",
+        "@target can only be used inside @targets or @pipeline; use `target(:name, f)` to " *
+            "declare a target on its own",
     )
 end
 
@@ -21,33 +28,59 @@ end
     @quarto name = "path.qmd" [option = value ...]
     @quarto "path.qmd" [option = value ...]
 
-Declare a [`tar_quarto`](@ref) report inside [`@pipeline`](@ref); the second
-form names it after the file (`reports/summary.qmd` is `summary`). Options are
-the keyword arguments of `tar_quarto`. Like `@target`, it is only valid inside
-`@pipeline`; elsewhere, call `tar_quarto`.
+Declare a [`tar_quarto`](@ref) report inside [`@targets`](@ref) or
+[`@pipeline`](@ref); the second form names it after the file
+(`reports/summary.qmd` is `summary`). Options are the keyword arguments of
+`tar_quarto`. Elsewhere, call `tar_quarto`.
 """
 macro quarto(args...)
     error(
-        "@quarto can only be used inside @pipeline; use `tar_quarto(name, path)` to declare " *
-            "a report on its own",
+        "@quarto can only be used inside @targets or @pipeline; use `tar_quarto(name, path)` " *
+            "to declare a report on its own",
     )
 end
 
-struct TargetDecl
+## Parsing a block
+
+struct TargetLine
     name::Symbol
     body::Any
     options::Vector{Pair{Symbol, Any}}
     line::LineNumberNode
 end
 
-struct QuartoDecl
+struct QuartoLine
     name::Symbol
     path::Any
     options::Vector{Pair{Symbol, Any}}
     line::LineNumberNode
 end
 
-function parse_quarto_decl(ex, line::LineNumberNode)
+"`name = value` (or a destructuring assignment) shared by the targets of a block."
+struct AssignLine
+    ex::Expr
+    line::LineNumberNode
+end
+
+"Any other line: its value (targets or a fragment) joins the block."
+struct SpliceLine
+    ex::Any
+    line::LineNumberNode
+end
+
+"""
+A parsed block: its lines, the names it binds (`locals`), and the names it
+declares as targets (`targets`).
+"""
+struct Block
+    items::Vector{Any}
+    locals::Set{Symbol}
+    targets::Set{Symbol}
+end
+
+location_prefix(line::LineNumberNode) = "$(something(line.file, :none)):$(line.line): "
+
+function parse_quarto_line(ex, line::LineNumberNode)
     args = Any[a for a in ex.args[3:end] if !(a isa LineNumberNode)]
     head = isempty(args) ? nothing : args[1]
     name, path = if Meta.isexpr(head, :(=)) && head.args[1] isa Symbol
@@ -56,7 +89,8 @@ function parse_quarto_decl(ex, line::LineNumberNode)
         report_name(head), head
     else
         error(
-            "$(line.file):$(line.line): expected `@quarto name = \"path.qmd\"` or " *
+            location_prefix(line) *
+                "expected `@quarto name = \"path.qmd\"` or " *
                 "`@quarto \"path.qmd\"`, got `$(ex)`",
         )
     end
@@ -64,12 +98,13 @@ function parse_quarto_decl(ex, line::LineNumberNode)
     for opt in args[2:end]
         (Meta.isexpr(opt, :(=)) && opt.args[1] isa Symbol) ||
             error(
-                "$(line.file):$(line.line): in `@quarto $name`, expected an option like " *
+                location_prefix(line) *
+                    "in `@quarto $name`, expected an option like " *
                     "`quarto_args = [\"--to\", \"pdf\"]`, got `$opt`",
             )
         push!(options, opt.args[1] => opt.args[2])
     end
-    return QuartoDecl(name, path, options, line)
+    return QuartoLine(name, path, options, line)
 end
 
 const TARGET_OPTIONS = (
@@ -85,69 +120,148 @@ const TARGET_OPTIONS = (
 )
 const PIPELINE_OPTIONS = (:track, :seed)
 
-function parse_target_decl(ex, line::LineNumberNode)
+function parse_target_line(ex, line::LineNumberNode)
     args = Any[a for a in ex.args[3:end] if !(a isa LineNumberNode)]
     (!isempty(args) && Meta.isexpr(args[1], :(=)) && args[1].args[1] isa Symbol) ||
-        error(
-            "$(line.file):$(line.line): expected `@target name = expression`, got `$(ex)`",
-        )
+        error(location_prefix(line) * "expected `@target name = expression`, got `$(ex)`")
     name, body = args[1].args
     options = Pair{Symbol, Any}[]
     for opt in args[2:end]
         (Meta.isexpr(opt, :(=)) && opt.args[1] in TARGET_OPTIONS) ||
             error(
-                "$(line.file):$(line.line): in `@target $name`, expected an option like " *
+                location_prefix(line) *
+                    "in `@target $name`, expected an option like " *
                     "`format = :file`, `pattern = other` or `cue = :always`, got `$opt`",
             )
         push!(options, opt.args[1] => opt.args[2])
     end
-    return TargetDecl(name, body, options, line)
+    return TargetLine(name, body, options, line)
 end
 
-function parse_pipeline_block(block)
-    decls = Union{TargetDecl, QuartoDecl}[]
+is_macro_line(ex, name) = Meta.isexpr(ex, :macrocall) && ex.args[1] === Symbol(name)
+
+# `f(x) = ...` defines a function, which belongs outside the block.
+is_assignment(ex) = Meta.isexpr(ex, :(=)) && !Meta.isexpr(ex.args[1], (:call, :where))
+
+function parse_line(ex, line::LineNumberNode)
+    is_macro_line(ex, "@target") && return parse_target_line(ex, line)
+    is_macro_line(ex, "@quarto") && return parse_quarto_line(ex, line)
+    is_assignment(ex) && return AssignLine(ex, line)
+    Meta.isexpr(ex, :(=)) &&
+        error(
+            location_prefix(line) *
+                "define functions outside @targets blocks, got `$(ex.args[1])`",
+        )
+    return SpliceLine(ex, line)
+end
+
+declared_names(t::Union{TargetLine, QuartoLine}) = [t.name]
+declared_names(_) = Symbol[]
+
+function assigned_names(a::AssignLine)
+    names = collect(ExpressionExplorer.compute_reactive_node(a.ex).definitions)
+    isempty(names) &&
+        error(
+            location_prefix(a.line) *
+                "an assignment in @targets must bind names, got `$(a.ex)`",
+        )
+    return names
+end
+assigned_names(_) = Symbol[]
+
+function parse_block(block::Expr; arguments = Symbol[])
+    items = Any[]
     line = LineNumberNode(0, :none)
     for ex in block.args
         if ex isa LineNumberNode
             line = ex
-        elseif Meta.isexpr(ex, :macrocall) && ex.args[1] === Symbol("@target")
-            push!(decls, parse_target_decl(ex, line))
-        elseif Meta.isexpr(ex, :macrocall) && ex.args[1] === Symbol("@quarto")
-            push!(decls, parse_quarto_decl(ex, line))
         else
-            error(
-                "$(line.file):$(line.line): @pipeline expects `@target` and `@quarto` lines, got `$ex`; " *
-                    "use `tar_pipeline(...)` to mix in other targets",
-            )
+            push!(items, parse_line(ex, line))
         end
     end
-    return decls
+    locals = Set{Symbol}(arguments)
+    foreach(item -> union!(locals, assigned_names(item)), items)
+    targets = Set{Symbol}()
+    for item in items, name in declared_names(item)
+        name in locals &&
+            error(
+                location_prefix(item.line) *
+                    "`$name` is both a variable of this block and " *
+                    "a target; rename one of them",
+            )
+        push!(targets, name)
+    end
+    return Block(items, locals, targets)
 end
 
-"Names from `names` that occur in `ex` (once each, in order of first appearance)."
-function referenced_targets(ex, names, found = Symbol[])
+## Free names of a target's expression
+
+strip_globalrefs(::GlobalRef) = nothing
+strip_globalrefs(ex::Expr) = Expr(ex.head, map(strip_globalrefs, ex.args)...)
+strip_globalrefs(x) = x
+
+# Macros are expanded where the block is written; what they generate from their
+# own module (a `GlobalRef`) cannot be a target or a value of the block.
+function expand_body(mod::Module, t::TargetLine)
+    expanded = try
+        macroexpand(mod, t.body)
+    catch e
+        e isa InterruptException && rethrow()
+        error(
+            location_prefix(t.line) *
+                "in `@target $(t.name)`, cannot expand macros: " *
+                sprint(showerror, e),
+        )
+    end
+    return strip_globalrefs(expanded)
+end
+
+function appearance_order(ex, found = Symbol[])
     if ex isa Symbol
-        ex in names && !(ex in found) && push!(found, ex)
+        ex in found || push!(found, ex)
     elseif ex isa Expr
-        ex.head == :quote && return found
-        # `name = value` assigns a local (or names a NamedTuple field): only the value is read
-        if ex.head == :(=) && ex.args[1] isa Symbol
-            return referenced_targets(ex.args[2], names, found)
-        end
-        if ex.head == :. && length(ex.args) == 2 && ex.args[2] isa QuoteNode
-            referenced_targets(ex.args[1], names, found) # `x.field`: field is not a target
-        elseif ex.head == :kw
-            referenced_targets(
-                ex.args[2],
-                names,
-                found,
-            ) # `f(key = value)`: key is not a target
-        else
-            foreach(a -> referenced_targets(a, names, found), ex.args)
-        end
+        foreach(a -> appearance_order(a, found), ex.args)
     end
     return found
 end
+
+"Whether `name` is bound by an enclosing block (`:local`), declared there (`:target`) or neither (`:free`)."
+function name_kind(name::Symbol, scopes::Vector{Block})
+    for b in Iterators.reverse(scopes)
+        name in b.locals && return :local
+        name in b.targets && return :target
+    end
+    return :free
+end
+
+"""
+The names `expanded` uses without binding them, in order of appearance, except
+`own` (a target's own name always means what it means outside the pipeline,
+so `@target summary = summary(fit)` works) and variables of enclosing blocks.
+"""
+function body_refs(expanded, own::Symbol, scopes::Vector{Block})
+    found = ExpressionExplorer.compute_reactive_node(expanded).references
+    return filter(appearance_order(expanded)) do s
+        s in found && s !== own && Base.isidentifier(s) && name_kind(s, scopes) !== :local
+    end
+end
+
+called_names(ex, found = Symbol[]) = found
+function called_names(ex::Expr, found = Symbol[])
+    ex.head == :quote && return found
+    if ex.head == :call && ex.args[1] isa Symbol
+        push!(found, ex.args[1])
+    elseif ex.head == :. &&
+            length(ex.args) == 2 &&
+            ex.args[1] isa Symbol &&
+            Meta.isexpr(ex.args[2], :tuple)
+        push!(found, ex.args[1]) # `f.(x)`
+    end
+    foreach(a -> called_names(a, found), ex.args)
+    return found
+end
+
+## Code generation
 
 # A bare symbol names a target (`pattern = grid`); a quoted one already is a Symbol.
 option_value(::Val{:pattern}, v) = pattern_expr(v)
@@ -174,33 +288,126 @@ function pattern_expr(v::Expr)
 end
 option_value(_, v) = v
 
-function expand_target(d::TargetDecl, names)
-    deps = referenced_targets(d.body, setdiff(names, [d.name]))
-    lambda = Expr(:->, Expr(:tuple, deps...), Expr(:block, d.line, d.body))
+keywords(options) = Expr(
+    :parameters,
+    (Expr(:kw, k, option_value(Val(k), v)) for (k, v) in options)...
+)
+named_tuple(pairs) = Expr(
+    :tuple,
+    Expr(:parameters, (Expr(:kw, k, v) for (k, v) in pairs)...),
+)
+symbols(names) = Expr(:ref, GlobalRef(Core, :Symbol), map(QuoteNode, names)...)
+
+function target_code(t::TargetLine, scopes::Vector{Block}, mod::Module)
+    expanded = expand_body(mod, t)
+    refs = body_refs(expanded, t.name, scopes)
+    body = Expr(:->, Expr(:tuple, refs...), Expr(:block, t.line, t.body))
+    undefined = GlobalRef(@__MODULE__, :UNDEFINED)
+    scope = Expr(
+        :->,
+        Expr(:tuple),
+        named_tuple(r => Expr(:if, Expr(:isdefined, r), r, undefined) for r in refs)
+    )
+    command = Expr(
+        :call,
+        GlobalRef(@__MODULE__, :MacroCommand),
+        body,
+        scope,
+        symbols(refs),
+        mod,
+    )
     source = Base.remove_linenums!(deepcopy(
-        d.body isa Expr ? d.body : Expr(:block, d.body),
+        t.body isa Expr ? t.body : Expr(:block, t.body),
     ))
-    kws = Any[Expr(:kw, k, option_value(Val(k), v)) for (k, v) in d.options]
-    push!(kws, Expr(:kw, :source, QuoteNode(source)))
+    pattern = [option_value(Val(k), v) for (k, v) in t.options if k == :pattern]
+    options = [k => v for (k, v) in t.options if k != :pattern]
     return Expr(
         :call,
-        GlobalRef(@__MODULE__, :target),
-        Expr(:parameters, kws...),
-        QuoteNode(d.name),
-        lambda,
+        GlobalRef(@__MODULE__, :TargetDeclaration),
+        QuoteNode(t.name),
+        command,
+        symbols(intersect(called_names(expanded), refs)),
+        QuoteNode(source),
+        isempty(pattern) ? nothing : only(pattern),
+        named_tuple(options),
+        QuoteNode(t.line),
     )
 end
 
-# A report's dependencies come from its document, so only its options are expanded.
-function expand_target(d::QuartoDecl, names)
-    kws = Any[Expr(:kw, k, v) for (k, v) in d.options]
-    return Expr(
+# A report's dependencies come from its document, so it is declared as is.
+function quarto_code(q::QuartoLine)
+    report = Expr(
         :call,
         GlobalRef(@__MODULE__, :tar_quarto),
-        Expr(:parameters, kws...),
-        QuoteNode(d.name),
-        d.path,
+        keywords(q.options),
+        QuoteNode(q.name),
+        q.path,
     )
+    return Expr(:call, GlobalRef(@__MODULE__, :PlainDeclaration), report)
+end
+
+push_code(acc, declaration) = Expr(:call, GlobalRef(Base, :push!), acc, declaration)
+
+item_code(t::TargetLine, acc, scopes, mod) = push_code(acc, target_code(t, scopes, mod))
+item_code(q::QuartoLine, acc, scopes, mod) = push_code(acc, quarto_code(q))
+item_code(a::AssignLine, acc, scopes, mod) = a.ex
+item_code(s::SpliceLine, acc, scopes, mod) = Expr(
+    :call,
+    GlobalRef(Base, :append!),
+    acc,
+    Expr(:call, GlobalRef(@__MODULE__, :declarations), s.ex),
+)
+
+"Code that runs a block's lines in order and returns its declarations."
+function block_code(b::Block, scopes::Vector{Block}, mod::Module)
+    scopes = [scopes; b]
+    acc = gensym(:declarations)
+    code = Any[Expr(:(=), acc, Expr(:ref, GlobalRef(@__MODULE__, :Declaration)))]
+    for item in b.items
+        push!(code, item.line, item_code(item, acc, scopes, mod))
+    end
+    push!(code, acc)
+    return Expr(:block, code...)
+end
+
+function fragment_code(block, mod::Module, caller::AbstractString)
+    Meta.isexpr(block, :block) ||
+        error("$caller expects a `begin ... end` block of @target lines, got `$block`")
+    code = Expr(:let, Expr(:block), block_code(parse_block(block), Block[], mod))
+    return Expr(:call, GlobalRef(@__MODULE__, :Fragment), code)
+end
+
+"""
+    @targets begin
+        @target name = expression [options...]
+        @quarto name = "report.qmd" [options...]
+        variable = value
+        other_fragment
+        ...
+    end
+
+A [`Fragment`](@ref) of targets, to pass to [`tar_pipeline`](@ref) (or to
+splice into another block). Each `@target`'s dependencies are the targets its
+expression refers to: names its expression binds itself (comprehension
+variables, lambda arguments, `let` bindings, ...) and variables of the block
+are not targets. A name that is neither a target nor defined where the block
+is written is an error when the pipeline is assembled, so fragments in
+different files can refer to each other's targets.
+
+Besides `@target` and [`@quarto`](@ref) lines, a block may assign variables
+that its targets share (`directory = "output"`), and contain expressions whose
+value is a fragment, a target or a collection of them, such as a fragment
+returned by a function. Each `@target`'s expression is what gets hashed, so
+reformatting never rebuilds; the values it captures from the block (and any
+local variables of an enclosing function) are hashed too.
+
+A target's own name in its expression is never a dependency
+(`@target summary = summary(fit)` calls the function `summary`). Calling a
+function that has the same name as a target is an error, since the name means
+the target.
+"""
+macro targets(block)
+    return esc(fragment_code(block, __module__, "@targets"))
 end
 
 """
@@ -210,21 +417,11 @@ end
         ...
     end
 
-Build a [`Pipeline`](@ref) from `@target` and [`@quarto`](@ref) lines,
-equivalent to the [`tar_pipeline`](@ref) of the corresponding
-[`target`](@ref)s and [`tar_quarto`](@ref) reports. Each target's
-dependencies are the other targets its expression mentions, and the expression
-itself is what gets hashed, so reformatting never rebuilds. A local variable
-that shadows a target name counts as a dependency (harmless: one extra edge).
+[`tar_pipeline`](@ref) of the [`@targets`](@ref) fragment the block declares,
+with the given options.
 """
 macro pipeline(args...)
     isempty(args) && error("@pipeline expects a `begin ... end` block of @target lines")
-    block = args[end]
-    Meta.isexpr(block, :block) ||
-        error("@pipeline expects a `begin ... end` block of @target lines, got `$block`")
-    decls = parse_pipeline_block(block)
-    names = [d.name for d in decls]
-    targets = Any[expand_target(d, names) for d in decls]
     options = Any[]
     for opt in args[1:(end - 1)]
         (Meta.isexpr(opt, :(=)) && opt.args[1] in PIPELINE_OPTIONS) ||
@@ -237,7 +434,7 @@ macro pipeline(args...)
         :call,
         GlobalRef(@__MODULE__, :tar_pipeline),
         Expr(:parameters, options...),
-        targets...,
+        fragment_code(args[end], __module__, "@pipeline"),
     )
     return esc(call)
 end
@@ -255,13 +452,13 @@ end
 @testitem "a macro pipeline matches the equivalent target() pipeline" setup = [
     MacroFixtures,
 ] begin
+    fit(a, b) = a * b
     p = @pipeline begin
         @target raw = 10
         @target clean = raw + 1
         @target other = 5
         @target model = fit(clean, other) cue = :always
     end
-    fit(a, b) = a * b
     q = tar_pipeline(
         target(:raw, () -> 10),
         target(:clean, raw -> raw + 1),
@@ -278,6 +475,8 @@ end
 @testitem "dependencies ignore field names, keywords and quoted code" setup = [
     MacroFixtures,
 ] begin
+    f(x; alpha) = x
+    g(x) = x
     p = @pipeline begin
         @target settings = (alpha = 1, depth = 2)
         @target alpha = 3
@@ -287,10 +486,138 @@ end
     @test Targets.get_target(p, :settings).deps == Symbol[]
 end
 
-@testitem "@target is only valid inside @pipeline, and @pipeline reports bad lines" begin
+@testitem "names an expression binds itself are not dependencies" begin
+    summarize(x) = x
+    p = @pipeline begin
+        @target fit = 1
+        @target data = 2
+        @target fits = [1, 2]
+        @target xs = [3, 4]
+        @target local_names = (
+            [summarize(fit) for fit in fits] .+ map(data -> data + 1, xs),
+            let data = 5
+                data
+            end,
+            map(xs) do fit
+                fit * 2
+            end,
+        )
+        @target block_local = begin
+            data = 3
+            data + 1
+        end
+    end
+    @test Targets.get_target(p, :local_names).deps == [:fits, :xs]
+    @test Targets.get_target(p, :block_local).deps == Symbol[]
+end
+
+@testitem "macros in an expression are expanded to find its dependencies" begin
+    p = @pipeline begin
+        @target x = [1, 2]
+        @target y = @. x + 1
+        @target z = @show(y)
+    end
+    @test Targets.get_target(p, :y).deps == [:x]
+    @test Targets.get_target(p, :z).deps == [:y]
+end
+
+@testitem "a name that is neither a target nor defined is an error with its line" begin
+    m = Module(:Typos)
+    Core.eval(m, :(using Targets))
+    @test_throws "uses `cleen`, which is neither a target nor defined" Core.eval(
+        m,
+        :(
+            @pipeline begin
+                @target clean = 1
+                @target model = cleen + 1
+            end
+        ),
+    )
+    @test_throws "did you mean `clean`" Core.eval(
+        m,
+        :(
+            @pipeline begin
+                @target clean = 1
+                @target model = cleen + 1
+            end
+        ),
+    )
+end
+
+@testitem "a target's own name means the function; other targets shadow functions" begin
+    total(xs) = sum(xs)
+    p = @pipeline begin
+        @target xs = [1, 2]
+        @target total = total(xs)
+    end
+    @test Targets.get_target(p, :total).deps == [:xs]
+    @test_throws "calls `total`, which is both a target and a function" @pipeline begin
+        @target xs = [1, 2]
+        @target total = 3
+        @target doubled = total(xs) * 2
+    end
+end
+
+@testitem "fragments refer to each other's targets and splice into blocks" setup = [
+    MacroFixtures,
+] begin
+    inputs = @targets begin
+        @target raw = 10
+    end
+    models = @targets begin
+        @target model = raw * 2
+    end
+    p = tar_pipeline(models, inputs)
+    @test Targets.get_target(p, :model).deps == [:raw]
+    @test p.order == [:raw, :model]
+    scale(k) = @targets begin
+        @target scaled = model * k
+    end
+    q = @pipeline begin
+        inputs
+        models
+        scale(3)
+        target(:plain, scaled -> scaled + 1)
+        @target summary = (scaled, plain)
+    end
+    @test [t.name for t in q.targets] == [:raw, :model, :scaled, :plain, :summary]
+    @test Targets.get_target(q, :scaled).deps == [:model]
+    @test Targets.get_target(q, :summary).deps == [:scaled, :plain]
+    mktempdir() do dir
+        store = joinpath(dir, "_targets")
+        tar_make(q; store, root = dir, io = devnull)
+        @test tar_read(:summary; store) == (60, 61)
+    end
+end
+
+@testitem "variables of a block and of an enclosing function are captured and hashed" begin
+    using Targets: command_hash
+    scaled(k) = @targets begin
+        offset = 1
+        @target x = k + offset
+    end
+    command(k) = only(tar_pipeline(scaled(k)).targets)
+    @test command(2).deps == Symbol[]
+    @test command(2).f() == 3
+    @test command_hash(command(2)) == command_hash(command(2))
+    @test command_hash(command(2)).hash != command_hash(command(3)).hash
+    m = Module(:Shadowing)
+    Core.eval(m, :(using Targets))
+    @test_throws "both a variable of this block and a target" Core.eval(
+        m,
+        :(
+            @targets begin
+                x = 1
+                @target x = 2
+            end
+        ),
+    )
+end
+
+@testitem "@target is only valid inside @targets, and blocks report bad lines" begin
     m = Module(:MacroErrors)
     Core.eval(m, :(using Targets))
-    @test_throws "inside @pipeline" Core.eval(m, :(@target a = 1))
+    @test_throws "inside @targets or @pipeline" Core.eval(m, :(@target a = 1))
     @test_throws "expected `@target name = expression`" Core.eval(
         m,
         :(
@@ -299,11 +626,19 @@ end
             end
         ),
     )
-    @test_throws "expects `@target` and `@quarto` lines" Core.eval(
+    @test_throws "accepts targets, @targets fragments" Core.eval(
         m,
         :(
             @pipeline begin
-                x = 5
+                5
+            end
+        ),
+    )
+    @test_throws "define functions outside" Core.eval(
+        m,
+        :(
+            @pipeline begin
+                f(x) = x
             end
         ),
     )
@@ -316,6 +651,7 @@ end
         ),
     )
     @test_throws "begin ... end" Core.eval(m, :(@pipeline 5))
+    @test_throws "begin ... end" Core.eval(m, :(@targets 5))
 end
 
 @testitem "macro pipelines build, and editing one line rebuilds only its descendants" setup = [
@@ -341,6 +677,22 @@ end
         @test s.built == [:clean, :model]
         @test s.skipped == [:raw, :other]
     end
+end
+
+@testitem "macro targets follow the user code their expressions call" setup = [
+    CodeFixtures,
+] begin
+    code(h2) = """
+    h2(x) = $h2
+    h1(x) = h2(x) * 2
+    p = @pipeline begin
+        @target a = h1(1)
+    end
+    t = only(p.targets)
+    """
+    base, _ = reach(code("x + 1"))
+    @test reach(code("x + 1"))[1] == base
+    @test reach(code("x + 2"))[1] != base
 end
 
 @testitem "macro pipelines support options and track" setup = [
@@ -418,7 +770,7 @@ end
         @test Targets.get_target(p, :report).cue == :always
         @test Targets.get_target(p, :summary).deps == [:report]
         @test Targets.get_target(p, :size).deps == [:report]
-        @test_throws "inside @pipeline" Core.eval(m, :(@quarto r = $report))
+        @test_throws "inside @targets or @pipeline" Core.eval(m, :(@quarto r = $report))
         @test_throws "expected `@quarto name" Core.eval(
             m,
             :(
