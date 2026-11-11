@@ -103,8 +103,17 @@ A rebuilt target whose output is identical stops the change there: its consumers
 see an unchanged value hash and are not rebuilt (*early cutoff*).
 
 Hashes come from parsed source, not lowered code, so upgrading Julia does not by
-itself rebuild anything. Only code whose source cannot be found (defined with
-`eval`, or at the REPL without Revise) falls back to lowered code and is flagged.
+itself rebuild anything. Methods that a macro or `struct` generates (`@kwdef`
+constructors, default constructors, `@eval`) are hashed from the macro call or
+`struct` that generates them, and user-defined macros are followed like
+functions. Only code whose source cannot be found (defined with `eval`, or at
+the REPL without Revise) falls back to lowered code and is flagged.
+
+Hashes do not depend on the numbers Julia gives the functions it generates
+(keyword bodies such as `#f#12`, anonymous functions and closures), which
+change whenever code earlier in the module does: generated functions, including
+lambdas stored in globals or captured by a target, are identified by what they
+do.
 
 "User code" is anything under the project directory, plus locations listed in
 `tar_pipeline(...; track = [MyLabUtils, "../shared"])`. Installed packages are

@@ -119,6 +119,19 @@ collect_lowered_refs!(refs, x::Core.ReturnNode) = isdefined(x, :val) ?
 collect_lowered_refs!(refs, x::Core.GotoIfNot) = collect_lowered_refs!(refs, x.cond)
 collect_lowered_refs!(refs, _) = refs
 
+"""
+Macros an unexpanded expression calls, so that user-defined macros are followed
+like functions: what they generate depends on their definitions, which the
+expanded code no longer names.
+"""
+collect_macro_refs!(refs, ::Module, _) = refs
+function collect_macro_refs!(refs, mod::Module, x::Expr)
+    x.head == :quote && return refs
+    x.head == :macrocall && collect_refs!(refs, mod, x.args[1]) # `@m` or `A.@m`
+    foreach(a -> collect_macro_refs!(refs, mod, a), x.args)
+    return refs
+end
+
 # Macros are expanded only to *find* callees: the hash itself is of the
 # unexpanded source, because Base macros may expand differently across versions.
 function expand_for_refs(mod::Module, expr)
@@ -135,7 +148,10 @@ function method_info(d::Discovery, m::Method; lowered_refs::Bool = false)
         refs = Tuple{Module, Symbol}[]
         exprs = lowered_refs ? nothing : method_source(m)
         if exprs !== nothing
-            foreach(e -> collect_refs!(refs, m.module, expand_for_refs(m.module, e)), exprs)
+            for e in exprs
+                collect_macro_refs!(refs, m.module, e)
+                collect_refs!(refs, m.module, expand_for_refs(m.module, e))
+            end
             return MethodInfo(method_hash(m), refs)
         end
         lowered = lowered_source(m)
@@ -178,7 +194,7 @@ function type_hash(T::DataType)
     # Abstract types (and e.g. varargs tuples) have no definite fields.
     names = Base.datatype_fieldcount(T) === nothing ? Symbol[] : collect(fieldnames(T))
     return canonical_hash((
-        nameof(T),
+        stable_name(nameof(T)),
         nameof(supertype(T)),
         names,
         [type_string(ft) for ft in T.types],
@@ -200,7 +216,7 @@ function consider_type!(w::Walk, T)
     push!(w.seen_values, T0)
     constructors = filter(m -> is_user_file(m.file, w.d.roots), collect(methods(T0)))
     (!isempty(constructors) || is_user_module(T0.name.module, w.d.roots)) || return nothing
-    push!(w.entries, "type:$(T0.name.module).$(T0.name.name)=$(type_hash(T0))")
+    push!(w.entries, "type:$(T0.name.module).$(stable_name(T0.name.name))=$(type_hash(T0))")
     foreach(m -> enqueue!(w, m), constructors)
     consider_type!(w, supertype(T0))
     foreach(ft -> consider_type!(w, ft), T0.types)
@@ -255,7 +271,10 @@ function code_hash(d::Discovery, t::Target)
         push!(d.files, String(m.file))
         if !is_own
             info.hash.hash === nothing ||
-                push!(w.entries, "method:$(m.module).$(m.name)=$(info.hash.hash)")
+                push!(
+                    w.entries,
+                    "method:$(m.module).$(stable_name(m.name))=$(info.hash.hash)",
+                )
         end
         for (mod, name) in info.refs
             consider_binding!(w, mod, name)
@@ -461,6 +480,40 @@ end
     h, d = reach("t = target(:a, () -> sum(map(abs, [1, -2])))")
     @test h == reach("t = target(:a, () -> sum(map(abs, [1, -2])) + 0)")[1]
     @test length(project_files(d)) == 1 # only the file defining the target itself
+end
+
+@testitem "code_hash ignores the counters Julia numbers generated functions with" setup = [
+    CodeFixtures,
+] begin
+    code(; before = "", default = "1", step = "x + 1") = """
+    $before
+    Base.@kwdef struct Settings
+        a::Int = $default
+    end
+    const STEPS = (double = x -> 2x, inc = x -> $step)
+    run(x) = STEPS.inc(STEPS.double(x)) + Settings().a
+    t = target(:a, () -> run(1))
+    """
+    base, _ = reach(code())
+    # keyword and anonymous functions defined earlier renumber the generated ones
+    renumbered = "g(; k = 1) = k\nh = [x -> x for _ in 1:2]\nw(f) = f(1)\nw() do y\n    y\nend"
+    @test reach(code(; before = renumbered))[1] == base
+    @test reach(code(; default = "2"))[1] != base  # a `@kwdef` default
+    @test reach(code(; step = "x + 2"))[1] != base # a lambda stored in a global
+end
+
+@testitem "code_hash follows user-defined macros" setup = [CodeFixtures] begin
+    with_macro(factor) = reach(
+        """
+    macro scaled(ex)
+        :($factor * \$(esc(ex)))
+    end
+    f(x) = @scaled x
+    t = target(:a, () -> f(1))
+    """,
+    )[1]
+    @test with_macro("2") == with_macro("2")
+    @test with_macro("2") != with_macro("3")
 end
 
 @testitem "code_hash terminates on recursion" setup = [CodeFixtures] begin

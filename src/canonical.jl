@@ -20,7 +20,31 @@ combine_hashes(hashes) = bytes2hex(SHA.sha256(
 # type prints in Main depends on what the session happens to have loaded (for
 # example a package exporting a name that clashes with one of ours), and the
 # hash must be the same in every process.
-type_string(T) = sprint(show, T; context = :module => Base)
+# Generated names (see `stable_name`) are written without their counters.
+type_string(T) = strip_counters(sprint(show, T; context = :module => Base))
+
+# Julia numbers the functions it generates (keyword bodies `#f#12`, anonymous
+# functions `#3#4`, closures `#f##0`) from a counter shared by the whole module,
+# so their numbers change whenever code defined earlier in the module does, and
+# differ between a fresh session and one where Revise re-evaluated code. A `#`
+# never precedes a digit in other names that reach a hash.
+strip_counters(s::AbstractString) = replace(s, r"(?<=#)\d+" => "")
+
+"""
+    stable_name(name::Symbol)
+
+`name` without the module-wide counters of generated functions: `#f#12`
+becomes `#f#` and `#3#4` becomes `##`. Other names are unchanged. What a
+generated function does is hashed from its definition, not its name.
+"""
+stable_name(name::Symbol) = startswith(String(name), '#') ?
+    Symbol(strip_counters(String(name))) :
+    name
+
+"Whether `T` is the type of a function Julia generated: an anonymous function or closure."
+is_generated_function_type(T) = T isa DataType &&
+    T <: Function &&
+    startswith(String(nameof(T)), '#')
 
 function write_tagged(io::IO, tag::Char, payload::AbstractString)
     write(io, UInt8(tag))
@@ -95,10 +119,22 @@ function write_canonical(io::IO, x::Expr)
 end
 write_canonical(io::IO, ::LineNumberNode) = nothing
 
+# Anonymous functions and closures by what they do (the hashes of their
+# methods' definitions, see `method_hash`) and the values they capture, since
+# their type names carry module-wide counters. Methods are sorted so that their
+# order does not matter.
+function write_closure(io::IO, f)
+    write_tagged(io, 'L', type_string(typeof(f)))
+    write_each(io, 'l', sort!([something(method_hash(m).hash, "") for m in methods(f)]))
+    write_each(io, 'r', (getfield(f, i) for i in 1:nfields(f)), nfields(f))
+end
+
 # Plain immutable structs by type name and fields; anything else falls back to
 # Serialization, which is not guaranteed stable across Julia versions.
 function write_canonical(io::IO, x::T) where {T}
-    if x isa Function && Base.issingletontype(T)
+    if is_generated_function_type(T)
+        write_closure(io, x)
+    elseif x isa Function && Base.issingletontype(T)
         write_tagged(io, 'U', type_string(T))
     elseif isstructtype(T) && !ismutabletype(T)
         write_tagged(io, 'R', type_string(T))

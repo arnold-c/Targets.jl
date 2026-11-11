@@ -102,6 +102,10 @@ function classify(e::Expr, start::Integer, line::Integer)
         end
         name = signature_name(sig)
         (name === nothing || start != line) || return (:named, e, name)
+    elseif e.head == :macro && length(e.args) >= 1
+        # `macro m(ex) ... end` defines the method `@m`
+        name = signature_name(e.args[1])
+        (name === nothing || start != line) || return (:named, e, Symbol('@', name))
     elseif e.head == :->
         return at_line(e) ? (:anonymous, e, lambda_argnames(e.args[1])) : nothing
     end
@@ -119,7 +123,7 @@ function classify_do(node::SyntaxNode, start::Integer, line::Integer)
     return (:anonymous, lambda, lambda_argnames(lambda.args[1]))
 end
 
-const CANDIDATE_KINDS = (K"function", K"=", K"->", K"do")
+const CANDIDATE_KINDS = (K"function", K"=", K"->", K"do", K"macro")
 
 function collect_candidates!(out, node::SyntaxNode, line::Integer)
     k = kind(node)
@@ -144,6 +148,38 @@ function collect_candidates!(out, node::SyntaxNode, line::Integer)
     return out
 end
 
+# Forms that define methods without writing them out: macro calls (`@kwdef`
+# constructors and their keyword bodies, `@eval`, ...) and `struct` (default
+# constructors).
+const GENERATING_KINDS = (K"macrocall", K"struct")
+
+"""
+    generating_form(node, line)
+
+The innermost macro call or `struct` in `node` spanning `line`, for methods
+with no definition of their own; a `struct` that is an argument of a macro call
+(`@kwdef struct ... end`) is reported as the call, since the macro decides
+what the definitions are. `nothing` if there is none.
+"""
+function generating_form(node::SyntaxNode, line::Integer, parent = nothing)
+    k = kind(node)
+    found = nothing
+    if k in GENERATING_KINDS
+        start = source_location(node)[1]
+        stop = source_location(node.source, last_byte(node))[1]
+        start <= line <= stop || return nothing
+        wrapped = k == K"struct" && parent !== nothing && kind(parent) == K"macrocall"
+        found = wrapped ? parent : node
+    end
+    kids = children(node)
+    kids === nothing && return found
+    for kid in kids
+        inner = generating_form(kid, line, node)
+        inner === nothing || return inner
+    end
+    return found
+end
+
 """
     method_source(m::Method)
 
@@ -152,6 +188,9 @@ Definition expressions of `m` found by parsing its file, in source order, or
 line. Several expressions are returned when definitions are ambiguous (for
 example two lambdas with the same arguments on one line): hashing all of them is
 conservative, so editing any of them rebuilds, but nothing stale is kept.
+Methods that a macro or `struct` generates (`@kwdef` constructors and their
+keyword bodies, default constructors) have no definition of their own; their
+source is the macro call or `struct` that generates them (`generating_form`).
 """
 # Where a method is defined. Revise (through CodeTracking) keeps named methods'
 # lines current after edits, but it cannot map anonymous functions and closures
@@ -185,8 +224,9 @@ function method_source(m::Method)
             (kind == :anonymous && names_match(detail, actual)) :
             (kind == :named && detail === name)
     end
-    isempty(matching) && return nothing
-    return Expr[e for (_, e, _) in matching]
+    isempty(matching) || return Expr[e for (_, e, _) in matching]
+    generated = generating_form(parsed_file(file), line)
+    return generated === nothing ? nothing : Expr[Expr(generated)]
 end
 
 """
@@ -285,6 +325,38 @@ end
     lam = only(src(m.lam))
     @test lam.head == :->
     @test lam.args[1] == Expr(:tuple, :z)
+end
+
+@testitem "method_source gives generated methods the macro call or struct that generates them" setup = [
+    SourceFixtures,
+] begin
+    using Targets: method_source
+    m, _ = load_source(
+        """
+    \"\"\"A documented struct.\"\"\"
+    Base.@kwdef struct K
+        a::Int = 1
+        b::Float64 = 2.0
+    end
+    struct P
+        x::Int
+    end
+    macro twice(ex)
+        :(2 * \$(esc(ex)))
+    end
+    """,
+    )
+    body = only(n for n in names(m; all = true) if occursin(r"^#K#\d+$", string(n)))
+    kwdef = [
+        method_source.(methods(m.K))
+        [method_source(only(methods(getfield(m, body))))]
+    ]
+    # constructors and keyword body: the macro call, which wraps the struct but
+    # not its docstring
+    @test all(src -> only(src).head == :macrocall, kwdef)
+    @test all(src -> only(src).args[end].head == :struct, kwdef)
+    @test all(meth -> only(method_source(meth)).head == :struct, methods(m.P))
+    @test only(method_source(only(methods(getfield(m, Symbol("@twice")))))).head == :macro
 end
 
 @testitem "method_source is nothing without a readable file" begin
