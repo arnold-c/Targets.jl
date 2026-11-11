@@ -81,6 +81,8 @@ include("jobs.jl")
 include("executors.jl")
 export Executor, TaskExecutor, DistributedExecutor
 
+include("display.jl")
+
 include("make.jl")
 export tar_make, tar_outdated, BuildSummary
 

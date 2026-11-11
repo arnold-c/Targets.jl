@@ -94,6 +94,7 @@ function plan_ready!(ctx::BuildContext, queue::ReadyQueue, pending::Vector{Job})
             finish_target!(ctx, queue, name)
         else
             foreach(job -> event!(ctx, job.key, :queued), jobs)
+            queued!(ctx.display, length(jobs))
             append!(pending, jobs)
         end
     end
@@ -127,6 +128,7 @@ function handle_result!(
     failure;
     keep_going,
 )
+    finished!(ctx.display, r.job)
     done = try
         commit!(ctx, r; keep_going = keep_going || failure[] !== nothing)
     catch e
@@ -140,6 +142,7 @@ end
 
 function finish_target!(ctx::BuildContext, queue::ReadyQueue, name::Symbol)
     release!(ctx, get_target(ctx.pipeline, name))
+    target_done!(ctx.display)
     ctx.observe(ctx)
     finish!(queue, name)
     return nothing

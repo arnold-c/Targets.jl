@@ -47,7 +47,7 @@ struct BuildContext
     store::Store
     root::String
     forced::Set{Symbol}
-    io::IO
+    display::BuildDisplay
     discovery::Discovery
     commands::Dict{Symbol, CommandHash}
     codes::Dict{Symbol, String}
@@ -89,7 +89,7 @@ function BuildContext(
     store::Store,
     root::AbstractString,
     forced,
-    io::IO,
+    display::BuildDisplay,
     discovery::Discovery,
     selected,
     observe::Function,
@@ -99,7 +99,7 @@ function BuildContext(
         store,
         String(root),
         Set{Symbol}(forced),
-        io,
+        display,
         discovery,
         Dict{Symbol, CommandHash}(),
         Dict{Symbol, String}(),
@@ -116,10 +116,16 @@ function BuildContext(
 end
 
 function log!(ctx::BuildContext, message::AbstractString)
-    println(ctx.io, message)
-    open(io -> println(io, message), log_path(ctx.store), "a")
+    show_line(ctx.display, message)
+    write_log(ctx.store, message)
     return nothing
 end
+
+write_log(s::Store, message::AbstractString) = open(
+    io -> println(io, message),
+    log_path(s),
+    "a",
+)
 
 """
     stored_value(store, name, kind)
@@ -290,7 +296,7 @@ function build_pipeline(
         s,
         rootdir,
         Symbol[],
-        io,
+        PlainDisplay(io),
         Discovery(user_roots(rootdir, p.track)),
         selected,
         observe,
@@ -563,7 +569,9 @@ end
 
 function log_start!(ctx::BuildContext, job::Job)
     event!(ctx, job.key, :started)
-    log!(ctx, "▶ $(job.key) ($(job.reason))")
+    write_log(ctx.store, start_line(job))
+    started!(ctx.display, job)
+    return nothing
 end
 
 # Record the failure but leave the last good object in place.
