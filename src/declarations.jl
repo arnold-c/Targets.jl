@@ -309,7 +309,9 @@ end
 
 """
 What `name` means at `level` itself: the target declared there, the group of a
-template in one of its `@map`s, or `nothing`.
+template in one of its `@map`s, what one of its `@map`s names `name` (a
+branch's target with that branch's suffix, as `real_fit` for `fit` in the
+`real` branch, before enclosing maps add theirs), or `nothing`.
 """
 local_target(level::Level, name::Symbol) = get!(
     () -> find_local_target(level, name),
@@ -329,6 +331,7 @@ function find_local_target(level::Level, name::Symbol)
         )
         g = map_group(m, bs, name)
         g === nothing || push!(found, g)
+        append!(found, branch_targets(m, bs, name))
     end
     length(found) > 1 &&
         throw(PipelineError(
@@ -336,6 +339,27 @@ function find_local_target(level::Level, name::Symbol)
                 "(as a target or in a @map); rename one of them",
         ))
     return isempty(found) ? nothing : only(found)
+end
+
+"What `name` means in each branch of `m` whose suffix it carries, without that suffix."
+function branch_targets(m::MapDeclaration, branches::Vector{Level}, name::Symbol)
+    found = Any[]
+    for ((suffix, _), b) in zip(m.branches, branches)
+        inner = without_suffix(string(name), suffix, m.prefix)
+        inner === nothing && continue
+        target = local_target(b, Symbol(inner))
+        target === nothing || push!(found, target)
+    end
+    return found
+end
+
+function without_suffix(name::String, suffix::String, prefix::Bool)
+    affix = prefix ? suffix * "_" : "_" * suffix
+    (length(name) > length(affix) && (prefix ? startswith : endswith)(name, affix)) ||
+        return nothing
+    return prefix ?
+        chop(name; head = length(affix), tail = 0) :
+        chop(name; head = 0, tail = length(affix))
 end
 
 function map_group(m::MapDeclaration, branches::Vector{Level}, name::Symbol)

@@ -85,7 +85,9 @@ tar_pipeline(models; seed = 2026)
 
 Within a branch a name means that branch's target: `data` in the fragment is
 `real_data_seir` in the `real`, `seir` branch. Outside a `@map`, a template's name means
-all of its targets, as a `NamedTuple` keyed by suffix (nested for nested maps). A block may
+all of its targets, as a `NamedTuple` keyed by suffix (nested for nested maps), and the
+name a branch gives it refers to that branch's: inside the `seir` branch `real_fit` is
+`real_fit_seir`, and outside the maps it is both models' real-data fits. A block may
 also assign variables its targets share (`directory = "output"`) and splice in fragments
 or `target()`s. Names, suffixes, groups and order follow `tar_map` (below), so
 `tar_make(names = [:real_fit])` builds both models' real-data fits.

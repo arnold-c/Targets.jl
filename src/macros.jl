@@ -1151,3 +1151,26 @@ end
     )
     @test_throws "inside @targets or @pipeline" Core.eval(m, :(@rep x = 1))
 end
+
+@testitem "names a nested @map gives resolve before enclosing suffixes are added" begin
+    p = @pipeline begin
+        @map((seir = 1, staged = 2)) do model
+            @map((real = :real, synthetic = :synthetic); prefix = true) do source
+                @target fit = (model, source)
+            end
+            @target campaign = real_fit
+        end
+        @target real_fits = real_fit
+        @target one = synthetic_fit_staged
+    end
+    get(n) = Targets.get_target(p, n)
+    @test get(:campaign_seir).deps == [:real_fit_seir]
+    @test get(:real_fits).deps == [:real_fit_seir, :real_fit_staged]
+    @test get(:one).deps == [:synthetic_fit_staged]
+    mktempdir() do dir
+        store = joinpath(dir, "_targets")
+        tar_make(p; store, root = dir, io = devnull)
+        @test tar_read(:real_fits; store) == (seir = (1, :real), staged = (2, :real))
+        @test tar_read(:campaign_staged; store) == (2, :real)
+    end
+end
