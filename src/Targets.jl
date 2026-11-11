@@ -110,7 +110,7 @@ export tar_list, TargetList
 include("api.jl")
 
 include("macros.jl")
-export @pipeline, @targets, @target, @quarto, @map, Fragment
+export @pipeline, @targets, @target, @quarto, @map, @rep, Fragment
 export tar_read, @tar_load, tar_manifest, tar_invalidate, tar_delete, tar_prune, tar_destroy
 
 end

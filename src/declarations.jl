@@ -122,6 +122,29 @@ struct TargetDeclaration <: Declaration
 end
 
 """
+Replications declared with [`@rep`](@ref): the expression of `command`, run
+`reps` times in each of `batches` branches, as [`tar_rep`](@ref) runs a
+function. `options` go to the branching target.
+"""
+struct RepDeclaration <: Declaration
+    name::Symbol
+    command::MacroCommand
+    called::Vector{Symbol}
+    source::Expr
+    batches::Int
+    reps::Int
+    options::NamedTuple
+    line::LineNumberNode
+end
+
+"One batch of a `@rep`: its command run `reps` times, each with its own seed."
+struct RepCommand
+    command::MacroCommand
+    reps::Int
+end
+(r::RepCommand)(batch, values...) = run_reps(r.command, r.reps, values)
+
+"""
 Targets declared once for each element of a collection by [`@map`](@ref): one
 branch of declarations per element, with the suffix its names get (in front
 of them when `prefix`).
@@ -206,6 +229,11 @@ end
 template_names(d::PlainDeclaration) = [d.target.name]
 template_names(d::TargetDeclaration) = [d.name]
 template_names(::MapDeclaration) = Symbol[]
+template_names(d::RepDeclaration) = [
+    Symbol(d.name, :_batch),
+    Symbol(d.name, :_batches),
+    d.name,
+]
 
 "The name a target declared as `name` gets at a level with `path`."
 final_name(name::Symbol, path) = foldr(
@@ -349,6 +377,31 @@ function assemble(d::TargetDeclaration, level::Level, asm::Assembly)
         source = d.source,
         d.options...,
     )
+end
+
+# The batch, branching and combined targets, suffixed as `tar_map_rep` suffixes them.
+function declared_targets(d::RepDeclaration, level::Level, asm::Assembly)
+    d.reps >= 1 || throw(ArgumentError("tar_rep: batches and reps must be positive"))
+    command, deps = resolve_command(d, level, asm)
+    own = template_names(d)
+    rename(n) = n in own ? final_name(n, level.path) : n
+    ts = batch_targets(
+        d.name,
+        RepCommand(command, d.reps),
+        deps;
+        batches = d.batches,
+        source = d.source,
+        d.options...,
+    )
+    return [
+        t.name => with_fields(
+            t;
+            name = rename(t.name),
+            deps = rename.(t.deps),
+            pattern = map_names(rename, t.pattern),
+        )
+        for t in ts
+    ]
 end
 
 """

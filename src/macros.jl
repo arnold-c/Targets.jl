@@ -65,9 +65,27 @@ macro map(args...)
     )
 end
 
+"""
+    @rep name = expression batches = ... reps = ... [options...]
+
+Inside [`@targets`](@ref) or [`@pipeline`](@ref), [`tar_rep`](@ref) of
+`expression`: it is evaluated `batches * reps` times, as `batches` branches of
+`reps` replications, each with its own seed. Declares `name_batch`,
+`name_batches` and `name`, the vector of all replications, as `tar_rep` does;
+the other options are [`target`](@ref)'s, for the branching target.
+"""
+macro rep(args...)
+    error(
+        "@rep can only be used inside @targets or @pipeline; use `tar_rep(name, f; batches, reps)` " *
+            "to declare replications on their own",
+    )
+end
+
 ## Parsing a block
 
+"`@target` (`kind` is `:target`) or `@rep` (`:rep`)."
 struct TargetLine
+    kind::Symbol
     name::Symbol
     body::Any
     options::Vector{Pair{Symbol, Any}}
@@ -152,24 +170,29 @@ const TARGET_OPTIONS = (
     :retries,
     :retry_delay,
 )
+const REP_OPTIONS = (:batches, :reps, filter(!=(:pattern), TARGET_OPTIONS)...)
 const PIPELINE_OPTIONS = (:track, :seed)
 
-function parse_target_line(ex, line::LineNumberNode)
+function parse_target_line(ex, line::LineNumberNode; kind::Symbol = :target)
     args = Any[a for a in ex.args[3:end] if !(a isa LineNumberNode)]
     (!isempty(args) && Meta.isexpr(args[1], :(=)) && args[1].args[1] isa Symbol) ||
-        error(location_prefix(line) * "expected `@target name = expression`, got `$(ex)`")
+        error(location_prefix(line) * "expected `@$kind name = expression`, got `$(ex)`")
     name, body = args[1].args
+    allowed = kind === :rep ? REP_OPTIONS : TARGET_OPTIONS
     options = Pair{Symbol, Any}[]
     for opt in args[2:end]
-        (Meta.isexpr(opt, :(=)) && opt.args[1] in TARGET_OPTIONS) ||
+        (Meta.isexpr(opt, :(=)) && opt.args[1] in allowed) ||
             error(
                 location_prefix(line) *
-                    "in `@target $name`, expected an option like " *
+                    "in `@$kind $name`, expected an option like " *
                     "`format = :file`, `pattern = other` or `cue = :always`, got `$opt`",
             )
         push!(options, opt.args[1] => opt.args[2])
     end
-    return TargetLine(name, body, options, line)
+    kind === :rep &&
+        !issubset((:batches, :reps), first.(options)) &&
+        error(location_prefix(line) * "`@rep $name` needs `batches = ...` and `reps = ...`")
+    return TargetLine(kind, name, body, options, line)
 end
 
 is_macro_line(ex, name) = Meta.isexpr(ex, :macrocall) && ex.args[1] === Symbol(name)
@@ -198,21 +221,36 @@ function parse_map_line(ex, line::LineNumberNode)
     length(positional) == 1 || error(location_prefix(line) * usage * ", got `$call`")
     for (k, _) in options
         k in MAP_OPTIONS ||
-            error(location_prefix(line) * "@map accepts the options `names` and `prefix`, got `$k`")
+            error(
+                location_prefix(line) *
+                    "@map accepts the options `names` and `prefix`, got `$k`",
+            )
     end
     arguments, body = lambda.args
-    return MapLine(only(positional), options, arguments, parse_map_body(body, arguments), line)
+    return MapLine(
+        only(positional),
+        options,
+        arguments,
+        parse_map_body(body, arguments),
+        line,
+    )
 end
 
 function parse_map_body(body, arguments::Expr)
-    names = collect(ExpressionExplorer.compute_reactive_node(Expr(:(=), arguments, 0)).definitions)
+    names = collect(
+        ExpressionExplorer.compute_reactive_node(Expr(:(=), arguments, 0)).definitions,
+    )
     return parse_block(body; arguments = names)
 end
 
 function parse_line(ex, line::LineNumberNode)
     is_macro_line(ex, "@target") && return parse_target_line(ex, line)
+    is_macro_line(ex, "@rep") && return parse_target_line(ex, line; kind = :rep)
     is_macro_line(ex, "@quarto") && return parse_quarto_line(ex, line)
-    (is_macro_line(ex, "@map") || (Meta.isexpr(ex, :do) && is_macro_line(ex.args[1], "@map"))) &&
+    (
+        is_macro_line(ex, "@map") ||
+            (Meta.isexpr(ex, :do) && is_macro_line(ex.args[1], "@map"))
+    ) &&
         return parse_map_line(ex, line)
     is_assignment(ex) && return AssignLine(ex, line)
     Meta.isexpr(ex, :(=)) &&
@@ -223,7 +261,10 @@ function parse_line(ex, line::LineNumberNode)
     return SpliceLine(ex, line)
 end
 
-declared_names(t::Union{TargetLine, QuartoLine}) = [t.name]
+declared_names(t::TargetLine) = t.kind === :rep ?
+    [Symbol(t.name, :_batch), Symbol(t.name, :_batches), t.name] :
+    [t.name]
+declared_names(q::QuartoLine) = [q.name]
 # A @map's templates are names of the enclosing block too (each its group).
 declared_names(m::MapLine) = collect(m.body.targets)
 declared_names(_) = Symbol[]
@@ -369,6 +410,40 @@ named_tuple(pairs) = Expr(
 symbols(names) = Expr(:ref, GlobalRef(Core, :Symbol), map(QuoteNode, names)...)
 
 function target_code(t::TargetLine, scopes::Vector{Block}, mod::Module)
+    command, called, source = command_code(t, scopes, mod)
+    option(k) = only(v for (key, v) in t.options if key == k)
+    if t.kind === :rep
+        options = [k => v for (k, v) in t.options if !(k in (:batches, :reps))]
+        return Expr(
+            :call,
+            GlobalRef(@__MODULE__, :RepDeclaration),
+            QuoteNode(t.name),
+            command,
+            called,
+            QuoteNode(source),
+            option(:batches),
+            option(:reps),
+            named_tuple(options),
+            QuoteNode(t.line),
+        )
+    end
+    pattern = [option_value(Val(k), v) for (k, v) in t.options if k == :pattern]
+    options = [k => v for (k, v) in t.options if k != :pattern]
+    return Expr(
+        :call,
+        GlobalRef(@__MODULE__, :TargetDeclaration),
+        QuoteNode(t.name),
+        command,
+        called,
+        QuoteNode(source),
+        isempty(pattern) ? nothing : only(pattern),
+        named_tuple(options),
+        QuoteNode(t.line),
+    )
+end
+
+"The `MacroCommand` of a target's expression, the names it calls, and the expression to hash."
+function command_code(t::TargetLine, scopes::Vector{Block}, mod::Module)
     expanded = expand_body(mod, t)
     refs = body_refs(expanded, t.name, scopes)
     body = Expr(:->, Expr(:tuple, refs...), Expr(:block, t.line, t.body))
@@ -389,19 +464,7 @@ function target_code(t::TargetLine, scopes::Vector{Block}, mod::Module)
     source = Base.remove_linenums!(deepcopy(
         t.body isa Expr ? t.body : Expr(:block, t.body),
     ))
-    pattern = [option_value(Val(k), v) for (k, v) in t.options if k == :pattern]
-    options = [k => v for (k, v) in t.options if k != :pattern]
-    return Expr(
-        :call,
-        GlobalRef(@__MODULE__, :TargetDeclaration),
-        QuoteNode(t.name),
-        command,
-        symbols(intersect(called_names(expanded), refs)),
-        QuoteNode(source),
-        isempty(pattern) ? nothing : only(pattern),
-        named_tuple(options),
-        QuoteNode(t.line),
-    )
+    return command, symbols(intersect(called_names(expanded), refs)), source
 end
 
 # A report's dependencies come from its document, so it is declared as is.
@@ -988,9 +1051,14 @@ end
 @testitem "@map reports bad usage" begin
     m = Module(:MapErrors)
     Core.eval(m, :(using Targets))
-    @test_throws "inside @targets or @pipeline" Core.eval(m, :(@map(1:2) do k
-        k
-    end))
+    @test_throws "inside @targets or @pipeline" Core.eval(
+        m,
+        :(
+            @map(1:2) do k
+                k
+            end
+        ),
+    )
     @test_throws "expected `@map(values" Core.eval(
         m,
         :(
@@ -1033,4 +1101,53 @@ end
             end
         ),
     )
+end
+
+@testitem "@rep matches tar_rep and tar_map_rep, with the same draws" setup = [
+    MacroFixtures,
+] begin
+    p = @pipeline begin
+        @target scale = 10
+        @rep draws = scale * rand() batches = 2 reps = 3
+        @target n = length(draws)
+        @map((a = 1, b = 100)) do mu
+            @rep sim = mu + scale batches = 2 reps = 2
+        end
+    end
+    q = tar_pipeline(
+        target(:scale, () -> 10),
+        tar_rep(:draws, scale -> scale * rand(); batches = 2, reps = 3),
+        target(:n, draws -> length(draws)),
+        tar_map_rep(
+            :sim,
+            (mu, scale) -> mu + scale,
+            (a = 1, b = 100);
+            batches = 2,
+            reps = 2,
+        ),
+    )
+    @test same_graph(p, q)
+    @test Targets.get_target(p, :sim_batches_b).deps == [:sim_batch_b, :scale]
+    mktempdir() do dir
+        function value_of(pipeline, name)
+            store = joinpath(dir, string(objectid(pipeline)))
+            tar_make(pipeline; store, root = dir, io = devnull)
+            return tar_read(name; store)
+        end
+        draws = value_of(p, :draws)
+        @test length(draws) == 6 && allunique(draws)
+        @test draws == value_of(q, :draws)
+        @test value_of(p, :sim_b) == fill(110, 4)
+    end
+    m = Module(:RepErrors)
+    Core.eval(m, :(using Targets))
+    @test_throws "needs `batches = ...` and `reps = ...`" Core.eval(
+        m,
+        :(
+            @targets begin
+                @rep x = rand() batches = 2
+            end
+        ),
+    )
+    @test_throws "inside @targets or @pipeline" Core.eval(m, :(@rep x = 1))
 end

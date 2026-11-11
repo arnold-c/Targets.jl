@@ -247,12 +247,14 @@ end
 "The methods of a target's own function, whose hash is the command hash."
 own_methods(f) = collect(methods(f))
 own_methods(c::MacroCommand) = collect(methods(c.body))
+own_methods(r::RepCommand) = own_methods(r.command)
 
 """
 Follow the values a `@target` takes from where it was declared: its body
 receives them as arguments, so its lowered code does not name them.
 """
 consider_scope!(::Walk, f) = nothing
+consider_scope!(w::Walk, r::RepCommand) = consider_scope!(w, r.command)
 function consider_scope!(w::Walk, c::MacroCommand)
     scope = scope_values(c)
     for (name, input) in zip(c.refs, c.inputs)
