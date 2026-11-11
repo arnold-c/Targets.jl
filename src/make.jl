@@ -473,10 +473,7 @@ need several jobs, or none.
 """
 function plan!(ctx::BuildContext, t::Target)
     sm = ctx.summary
-    upstream_failed = filter(
-        d -> (d in sm.errored && !(d in ctx.nulled)) || d in sm.blocked,
-        t.deps,
-    )
+    upstream_failed = upstream_failures(ctx, t)
     if !isempty(upstream_failed)
         push!(sm.blocked, t.name)
         event!(ctx, t.name, :blocked)
@@ -486,19 +483,8 @@ function plan!(ctx::BuildContext, t::Target)
     cmd = command_for!(ctx, t)
     code = code_for!(ctx, t)
     t.pattern === nothing || return plan_branching!(ctx, t, cmd, code)
-    dep_hashes = Dict{Symbol, String}(d => ctx.value_hashes[d] for d in t.deps)
-    seed = resolve_seed(ctx.pipeline, t)
-    reason = outdated_reason(
-        ctx.store,
-        t,
-        cmd,
-        code,
-        dep_hashes;
-        seed = seed_string(seed),
-        forced = t.name in ctx.forced,
-        root = ctx.root,
-    )
-    if reason === nothing
+    decision = decide(ctx, t)
+    if decision.reason === nothing
         ctx.value_hashes[t.name] = stored_value_hash(ctx.store, t.name)
         push!(sm.skipped, t.name)
         event!(ctx, t.name, :skipped)
@@ -512,15 +498,48 @@ function plan!(ctx::BuildContext, t::Target)
         0,
         args,
         load_error,
-        seed,
-        reason,
+        decision.seed,
+        decision.reason,
         cmd,
         code,
-        dep_hashes,
+        decision.dep_hashes,
         pattern_use_of(ctx.pipeline, t.name),
         ctx.store,
         ctx.root,
     )]
+end
+
+"The dependencies of `t` that failed (and give no `nothing` instead) or were blocked."
+upstream_failures(ctx::BuildContext, t::Target) = filter(
+    d -> (d in ctx.summary.errored && !(d in ctx.nulled)) || d in ctx.summary.blocked,
+    t.deps,
+)
+
+"""
+Whether a target that does not branch must be built (`reason`, `nothing` when
+it is up to date), with the upstream value hashes and the seed it is judged by.
+"""
+struct Decision
+    reason::Union{Nothing, Symbol}
+    dep_hashes::Dict{Symbol, String}
+    seed::Union{Nothing, UInt64}
+end
+
+"Decide whether target `t` must be built; all its dependencies have finished."
+function decide(ctx::BuildContext, t::Target)
+    dep_hashes = Dict{Symbol, String}(d => ctx.value_hashes[d] for d in t.deps)
+    seed = resolve_seed(ctx.pipeline, t)
+    reason = outdated_reason(
+        ctx.store,
+        t,
+        command_for!(ctx, t),
+        code_for!(ctx, t),
+        dep_hashes;
+        seed = seed_string(seed),
+        forced = t.name in ctx.forced,
+        root = ctx.root,
+    )
+    return Decision(reason, dep_hashes, seed)
 end
 
 # Load a job's arguments; a failure becomes the job's error rather than ending the run.
