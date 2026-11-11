@@ -1,74 +1,11 @@
-# A small, self-contained project for trying Targets by hand.
+# Shared machinery for the demo projects: writing them, setting up their
+# environments, and the scripted walkthroughs. The pipelines themselves are in
 #
-# The demo is a real project with its own environment in `examples/.demo/` (git-ignored;
-# delete it to start over). Create it once from the repository root:
+#   demo_functions.jl   declared with `target`, `tar_map`, `tar_combine`, `tar_rep`
+#   demo_macros.jl      the same pipelines with `@pipeline`, `@target`, `@map`, `@rep`
 #
-#   julia --project=. -e 'include("examples/demo.jl"); demo_setup()'
-#
-# Then work in it like any project, in a fresh REPL:
-#
-#   cd examples/.demo
-#   julia --project=.                 # or: pkg> activate .
-#   julia> using Targets, CairoMakie  # or GLMakie (a window), or WGLMakie (a browser tab)
-#   julia> tar_make()                 # builds; run it again to see "up to date"
-#   julia> tar_outdated()
-#   julia> tar_read(:report)
-#   julia> print(tar_dot())
-#   julia> tar_visnetwork()           # needs one of the Makie backends above; with
-#                                     # GLMakie or WGLMakie: drag targets, pan, zoom
-#
-# To try an edit, regenerate the files with one change (from that same REPL):
-#
-#   julia> include("../demo.jl")
-#   julia> write_demo(; scale = 4)    # a global that `score` reaches
-#   julia> tar_outdated()             # what would rebuild, and why
-#   julia> tar_make()
-#
-# Other knobs of `write_demo`: note (comment only), data (input file), grid (branching),
-# discount (a helper two calls deep), shifts (static branching).
-#
-# The v0.2 features (seeds, concurrent jobs, formats, patterns, tar_rep, error modes,
-# retries, workspaces, cues, progress, executors) have a second project in
-# `examples/.demo-features/` (also git-ignored). Create it once:
-#
-#   julia --project=. -e 'include("examples/demo.jl"); features_setup()'
-#
-# Start Julia with threads, so concurrent targets really run in parallel (`jobs`
-# also works on one thread, but then tasks only interleave):
-#
-#   cd examples/.demo-features
-#   julia --project=. -t 4
-#   julia> using Targets, GLMakie     # or CairoMakie, or WGLMakie
-#   julia> tar_make(; jobs = 4)       # `maybe` fails (error = :null), one branch of
-#                                     # `fragile_fits` is trimmed, `flaky` is retried
-#   julia> tar_read(:uses_maybe), tar_read(:fragile_fits), tar_read(:exclusive)
-#   julia> tar_errored()              # what failed, and why
-#   julia> tar_traceback(:maybe)
-#   julia> tar_workspace(:maybe)      # the arguments of the failed call
-#   julia> tar_rerun(:maybe)          # rerun it here, with the same seed
-#   julia> tar_meta()                 # look for `warnings` in the `noisy` row
-#   julia> tar_progress()             # the last run's events, also during a build
-#   julia> tar_visnetwork()
-#
-# Then fix the failures and edit things:
-#
-#   julia> rm("fail_10"); rm("fail_maybe")
-#   julia> tar_make(; jobs = 4)       # only the failed parts rebuild
-#   julia> include("../demo.jl")
-#   julia> write_features(; seed = 1)                   # :seed_changed
-#   julia> write_features(; seed = 1, total = "sum(xs) + 0")  # Cue(code = false): nothing
-#   julia> write_features(; seed = 1, fast_format = :jld2)    # :format_changed
-#   julia> tar_outdated(); tar_make(; jobs = 4, check_mutation = true)
-#
-# Or on worker processes, from the same REPL:
-#
-#   julia> using Distributed; addprocs(2; exeflags = "--project=$(Base.active_project())")
-#   julia> tar_make(; executor = DistributedExecutor(workers()), force = true)
-#
-# `walkthrough()` and `features_walkthrough()` run fixed sequences of these edits in
-# temporary directories and check that each step rebuilds exactly what it should:
-#
-#   julia --project=. -t 4 examples/demo.jl [--distributed]
+# Include one of those (it includes this file), not this file on its own. See
+# README.md in this directory for what to try.
 
 # Use the repository's Targets when no environment provides one (e.g. a fresh `julia`).
 using Pkg
@@ -79,8 +16,48 @@ end
 using Targets
 using Logging: Logging, ConsoleLogger, with_logger
 
-demo_dir() = joinpath(@__DIR__, ".demo")
+## Styles
+
+"""
+    DemoStyle
+
+How a demo project's `_targets.jl` declares its pipeline. `demo_functions.jl`
+and `demo_macros.jl` each define one, with methods of [`style_name`](@ref),
+[`demo_targets`](@ref) and [`features_targets`](@ref), and make it the default
+of every function here by assigning it to `DEMO_STYLE`.
+"""
+abstract type DemoStyle end
+
+"""
+    style_name(style)
+
+`"functions"` or `"macros"`: names the style's script and project directories.
+"""
+function style_name end
+
+"""
+    demo_targets(style; grid, shifts)
+
+The code that ends the core demo's `_targets.jl` and returns its pipeline; see
+[`write_demo`](@ref) for the keywords.
+"""
+function demo_targets end
+
+"""
+    features_targets(style; seed, fast_format)
+
+The code that ends the feature demo's `_targets.jl` and returns its pipeline;
+see [`write_features`](@ref) for the keywords.
+"""
+function features_targets end
+
+style_script(style = DEMO_STYLE) = joinpath(@__DIR__, "demo_$(style_name(style)).jl")
+
+## Writing a project
+
+demo_dir(style = DEMO_STYLE) = joinpath(@__DIR__, ".demo-$(style_name(style))")
 demo_store(dir = demo_dir()) = joinpath(dir, "_targets")
+demo_script(dir = demo_dir()) = joinpath(dir, "_targets.jl")
 
 # Every demo environment has all three, so each way of plotting can be tried.
 const MAKIE_BACKENDS = (:CairoMakie, :GLMakie, :WGLMakie)
@@ -103,6 +80,16 @@ function makie_line(makie)
     return "using $makie\n"
 end
 
+"Write `dir`'s `_targets.jl`: load Targets, `makie` and the `helpers` file, then `pipeline`."
+write_script(dir, makie, helpers, pipeline) = write(
+    demo_script(dir),
+    """
+    using Targets
+    $(makie_line(makie))Base.include(@__MODULE__, joinpath(@__DIR__, "$helpers"))
+
+    $pipeline""",
+)
+
 function print_plotting_help()
     println("  Plot with any Makie backend (all three are installed):")
     println("  using CairoMakie; tar_visnetwork()   # a static figure")
@@ -112,10 +99,12 @@ function print_plotting_help()
 end
 
 """
-    write_demo(dir; scale = 3, note = "", data = "1.0 2.0 NaN 4.0", grid = "[0.1, 0.5, 1.0]",
-               discount = "x", shifts = "(low = 1, high = 2)", makie = makie_backend(dir))
+    write_demo(dir = demo_dir(); style = DEMO_STYLE, scale = 3, note = "",
+               data = "1.0 2.0 NaN 4.0", grid = "[0.1, 0.5, 1.0]", discount = "x",
+               shifts = "(low = 1, high = 2)", makie = makie_backend(dir))
 
-Write the demo project into `dir`. Each keyword changes one thing:
+Write the core demo project into `dir`, its pipeline declared in `style`. Each
+other keyword changes one thing:
 
 - `scale`: a `const` in `analysis.jl` that `score` reaches (code edit, changes outputs)
 - `note`: a comment line (formatting-only edit: must rebuild nothing)
@@ -123,14 +112,14 @@ Write the demo project into `dir`. Each keyword changes one thing:
 - `grid`: the pattern target's elements (branching)
 - `discount`: an expression inside a helper two calls deep from the `scores` target
 - `shifts`: a named tuple of shifts; each name gets a `shifted_<name>` and a
-  `shift_summary_<name>` target (static branching with `tar_map`), combined by
-  `shifted_total` (`tar_combine`)
+  `shift_summary_<name>` target (static branching), combined by `shifted_total`
 - `makie`: a Makie backend for `_targets.jl` to load (`:CairoMakie`, `:GLMakie` or
   `:WGLMakie`), or `nothing`; kept on regeneration. Loading a backend activates it,
   so leave this `nothing` to choose the backend in the REPL instead
 """
 function write_demo(
     dir::AbstractString = demo_dir();
+    style::DemoStyle = DEMO_STYLE,
     scale = 3,
     note = "",
     data = "1.0 2.0 NaN 4.0",
@@ -160,56 +149,30 @@ function write_demo(
         summarize(scores) = (n = length(scores), total = round(sum(scores); digits = 3))
         """,
     )
-    write(
-        joinpath(dir, "_targets.jl"),
-        """
-        using Targets
-        $(makie_line(makie))Base.include(@__MODULE__, joinpath(@__DIR__, "analysis.jl"))
-
-        base = @pipeline begin
-            @target raw_file = "data/raw.csv"  format = :file
-            @target raw      = parse.(Float64, split(read(raw_file, String)))
-            @target cleaned  = clean(raw)
-            @target grid     = $grid
-            @target scores   = score(Params(grid), cleaned)  pattern = grid
-            @target report   = summarize(scores)
-        end
-
-        # Static branching: two targets per named shift (`shifted_low`, `shift_summary_low`, ...).
-        # `shift_summary` depends on `shifted` from its own branch; one target combines them.
-        static = tar_map($shifts) do k
-            (
-                target(:shifted, cleaned -> cleaned .+ k),
-                target(:shift_summary, shifted -> summarize(shifted)),
-            )
-        end
-
-        combined = tar_combine(
-        	:shifted_total,
-        	(xs...) -> sum(x.total for x in xs),
-        	static.shift_summary
-        )
-
-        tar_pipeline(base.targets, static, combined)
-        """,
-    )
+    write_script(dir, makie, "analysis.jl", demo_targets(style; grid, shifts))
     return dir
 end
 
 """
-    demo_setup(dir = demo_dir(); makie = nothing)
+    demo_setup(dir = demo_dir(); style = DEMO_STYLE, makie = nothing)
 
-Write the demo project and give it its own environment with this repository's
-Targets developed into it, plus CairoMakie, GLMakie and WGLMakie, ready to
-`activate` and `tar_make()`. `makie` is passed to [`write_demo`](@ref).
+Write the core demo project and give it its own environment with this
+repository's Targets developed into it, plus CairoMakie, GLMakie and WGLMakie,
+ready to `activate` and `tar_make()`. `style` and `makie` are passed to
+[`write_demo`](@ref).
 """
-function demo_setup(dir::AbstractString = demo_dir(); makie = nothing)
-    write_demo(dir; makie)
+function demo_setup(
+    dir::AbstractString = demo_dir();
+    style::DemoStyle = DEMO_STYLE,
+    makie = nothing,
+)
+    write_demo(dir; style, makie)
     setup_environment(dir, [string.(MAKIE_BACKENDS)...])
-    println("Demo project ready in ", dir)
+    println("Demo project ($(style_name(style))) ready in ", dir)
     println("  cd(\"", relpath(dir), "\"); then start julia with --project=. and run:")
     println("  using Targets")
     println("  tar_make()")
+    println("  include(\"", relpath(style_script(style), dir), "\")  # to edit it")
     print_plotting_help()
     return dir
 end
@@ -237,8 +200,6 @@ function setup_environment(dir::AbstractString, packages)
     end
     return dir
 end
-
-demo_script(dir = demo_dir()) = joinpath(dir, "_targets.jl")
 
 "Run `tar_make` on the demo project in `dir`, with the store inside it."
 demo_make(dir = demo_dir(); io = stdout, kwargs...) = tar_make(;
@@ -273,40 +234,40 @@ function check(label, summary, expected_built)
 end
 
 """
-    walkthrough(dir = mktempdir())
+    walkthrough(dir = mktempdir(); style = DEMO_STYLE)
 
-Build, edit and rebuild the demo project, checking after each step that exactly the
-expected targets were rebuilt. Returns `true` if every step matched.
+Build, edit and rebuild the core demo project, checking after each step that
+exactly the expected targets were rebuilt. Returns `true` if every step matched.
 """
-function walkthrough(dir = mktempdir())
+function walkthrough(dir = mktempdir(); style::DemoStyle = DEMO_STYLE)
     everything = [:raw_file, :raw, :cleaned, :grid, :scores, :report]
     shifted(names...) = [Symbol(p, n) for n in names for p in (:shifted_, :shift_summary_)]
     append!(everything, shifted(:low, :high), [:shifted_total])
     results = Bool[]
-    run(label, expected; kw...) = push!(
+    run(label, expected) = push!(
         results,
         check(label, demo_make(dir; io = devnull), expected),
     )
+    rewrite(; kwargs...) = write_demo(dir; style, kwargs...)
 
-    println("Walkthrough in ", dir)
-    write_demo(dir)
+    println("Walkthrough (", style_name(style), ") in ", dir)
+    rewrite()
     run("first build", everything)
     run("second build (nothing changed)", Symbol[])
 
-    write_demo(dir; note = "# only a comment, and everything below it moves down a line")
+    rewrite(; note = "# only a comment, and everything below it moves down a line")
     run("comment added", Symbol[])
 
-    write_demo(dir; discount = "x + 0") # helper edited, same outputs
+    rewrite(; discount = "x + 0") # helper edited, same outputs
     run("helper edited, outputs unchanged (early cutoff)", [:scores])
 
-    write_demo(dir; discount = "x + 0", scale = 4) # global edited, outputs change
+    rewrite(; discount = "x + 0", scale = 4) # global edited, outputs change
     run("global edited", [:scores, :report])
 
-    write_demo(dir; discount = "x + 0", scale = 4, grid = "[0.1, 0.5, 1.0, 2.0]")
+    rewrite(; discount = "x + 0", scale = 4, grid = "[0.1, 0.5, 1.0, 2.0]")
     run("one element added to the pattern", [:grid, :scores, :report])
 
-    write_demo(
-        dir;
+    rewrite(;
         discount = "x + 0",
         scale = 4,
         grid = "[0.1, 0.5, 1.0, 2.0]",
@@ -314,8 +275,7 @@ function walkthrough(dir = mktempdir())
     )
     run("static branch value changed", [shifted(:high)..., :shifted_total])
 
-    write_demo(
-        dir;
+    rewrite(;
         discount = "x + 0",
         scale = 4,
         grid = "[0.1, 0.5, 1.0, 2.0]",
@@ -323,8 +283,7 @@ function walkthrough(dir = mktempdir())
     )
     run("static branch added", [shifted(:mid)..., :shifted_total])
 
-    write_demo(
-        dir;
+    rewrite(;
         discount = "x + 0",
         scale = 4,
         grid = "[0.1, 0.5, 1.0, 2.0]",
@@ -355,21 +314,18 @@ function walkthrough(dir = mktempdir())
 end
 
 ## A second project exercising what v0.2 added: seeds, concurrent jobs and slots,
-## storage formats, pattern combinators, `tar_rep`, error modes, retries,
+## storage formats, pattern combinators, replication, error modes, retries,
 ## workspaces, tracebacks and warnings, cues, progress events and executors.
-## `features_walkthrough()` builds and edits it, checking each step:
-##
-##   julia --project=. -t 4 examples/demo.jl
-##
 ## (URL targets need a server, so they are not part of it; see `format = :url`.)
 
-features_dir() = joinpath(@__DIR__, ".demo-features")
+features_dir(style = DEMO_STYLE) = joinpath(@__DIR__, ".features-$(style_name(style))")
 
 """
-    write_features(dir = features_dir(); seed = 0, noise = 1.0, total = "sum(xs)",
-                   fast_format = :jls, makie = makie_backend(dir))
+    write_features(dir = features_dir(); style = DEMO_STYLE, seed = 0, noise = 1.0,
+                   total = "sum(xs)", fast_format = :jls, makie = makie_backend(dir))
 
-Write the v0.2 feature project into `dir`. Each keyword changes one thing:
+Write the v0.2 feature project into `dir`, its pipeline declared in `style`.
+Each other keyword changes one thing:
 
 - `seed`: the pipeline seed (every `seed = :auto` target rebuilds, `:seed_changed`)
 - `noise`: a `const` reached by the seeded `draws` target
@@ -384,6 +340,7 @@ Targets fail while marker files exist: `fail_10` fails one branch of
 """
 function write_features(
     dir::AbstractString = features_dir();
+    style::DemoStyle = DEMO_STYLE,
     seed = 0,
     noise = 1.0,
     total = "sum(xs)",
@@ -415,60 +372,32 @@ function write_features(
         end
         """,
     )
-    write(
-        joinpath(dir, "_targets.jl"),
-        """
-        using Targets
-        $(makie_line(makie))Base.include(@__MODULE__, joinpath(@__DIR__, "features.jl"))
-
-        tar_pipeline(
-            target(:mus, () -> [0.0, 10.0, 20.0]),
-            target(:sizes, () -> [1, 2]),
-            # seeded branches: the same draws however and wherever they are built
-            target(:draws, mus -> simulate(mus); pattern = :mus),
-            # pattern combinators
-            target(:combos, (mus, sizes) -> mus * sizes; pattern = Cross(:mus, :sizes)),
-            target(:paired, (mus, sizes) -> (mus, sizes); pattern = Map(Head(:mus, 2), :sizes)),
-            target(:sampled, mus -> mus; pattern = Sample(:mus, 2)),
-            # batched replication: 2 branches of 5 reps
-            tar_rep(:reps, () -> randn(); batches = 2, reps = 5),
-            # error modes and retries
-            target(:fragile_fits, mus -> fragile(mus); pattern = :mus, error = :trim),
-            target(:maybe, () -> maybe_value(); error = :null),
-            target(:uses_maybe, maybe -> maybe === nothing ? "no value" : "value \$maybe"),
-            target(:flaky, () -> flaky(); retries = 2),
-            # warnings are recorded
-            target(:noisy, draws -> noisy_sum(draws)),
-            # concurrency options
-            target(:exclusive, () -> tar_slots(); slots = :all),
-            target(:on_main, () -> "ran in the calling task"; deployment = :main),
-            # cues and formats
-            target(:cached_total, mus -> total(mus); cue = Cue(code = false)),
-            target(:fast, () -> Dict(:a => [1, 2, 3]); format = :$fast_format);
-            seed = $seed,
-        )
-        """,
-    )
+    write_script(dir, makie, "features.jl", features_targets(style; seed, fast_format))
     return dir
 end
 
 """
-    features_setup(dir = features_dir(); makie = nothing)
+    features_setup(dir = features_dir(); style = DEMO_STYLE, makie = nothing)
 
 Write the v0.2 feature project, with the marker files that make two targets
 fail, and give it its own environment (Targets, CairoMakie, GLMakie, WGLMakie
-and Distributed), ready to `activate` and `tar_make(; jobs = 4)`. `makie` is
-passed to [`write_features`](@ref).
+and Distributed), ready to `activate` and `tar_make(; jobs = 4)`. `style` and
+`makie` are passed to [`write_features`](@ref).
 """
-function features_setup(dir::AbstractString = features_dir(); makie = nothing)
-    write_features(dir; makie)
+function features_setup(
+    dir::AbstractString = features_dir();
+    style::DemoStyle = DEMO_STYLE,
+    makie = nothing,
+)
+    write_features(dir; style, makie)
     touch(joinpath(dir, "fail_10"))
     touch(joinpath(dir, "fail_maybe"))
     setup_environment(dir, [string.(MAKIE_BACKENDS)..., "Distributed"])
-    println("Feature project ready in ", dir)
+    println("Feature project ($(style_name(style))) ready in ", dir)
     println("  cd(\"", relpath(dir), "\"); then start julia with --project=. -t 4 and run:")
     println("  using Targets")
     println("  tar_make(; jobs = 4)")
+    println("  include(\"", relpath(style_script(style), dir), "\")  # to edit it")
     print_plotting_help()
     return dir
 end
@@ -492,13 +421,17 @@ features_outdated(dir) = tar_outdated(;
 )
 
 """
-    features_walkthrough(dir = mktempdir(); distributed = false)
+    features_walkthrough(dir = mktempdir(); style = DEMO_STYLE, distributed = false)
 
 Build and edit the v0.2 feature project, checking each step. With
 `distributed = true`, also build it on two `Distributed` workers. Returns `true`
 if every check passed.
 """
-function features_walkthrough(dir = mktempdir(); distributed = false)
+function features_walkthrough(
+    dir = mktempdir();
+    style::DemoStyle = DEMO_STYLE,
+    distributed = false,
+)
     results = Bool[]
     function ok(label, cond, detail = "")
         println(
@@ -512,8 +445,16 @@ function features_walkthrough(dir = mktempdir(); distributed = false)
     store = demo_store(dir)
     read_target(name) = tar_read(name; store, on_outdated = :ignore)
 
-    println("Feature walkthrough in ", dir, " (", Threads.nthreads(), " threads)")
-    write_features(dir)
+    println(
+        "Feature walkthrough (",
+        style_name(style),
+        ") in ",
+        dir,
+        " (",
+        Threads.nthreads(),
+        " threads)",
+    )
+    write_features(dir; style)
     touch(joinpath(dir, "fail_10"))
     touch(joinpath(dir, "fail_maybe"))
 
@@ -538,7 +479,7 @@ function features_walkthrough(dir = mktempdir(); distributed = false)
     )
     ok("Map(Head(...), ...) pairs elements", read_target(:paired) == [(0.0, 1), (10.0, 2)])
     ok("Sample picks two", length(read_target(:sampled)) == 2)
-    ok("tar_rep gathers batches x reps", length(read_target(:reps)) == 10)
+    ok("replication gathers batches x reps", length(read_target(:sims)) == 10)
     ok(":jls objects are stored", isfile(joinpath(store, "objects", "fast.jls")))
 
     # 2. debugging the failure
@@ -571,12 +512,12 @@ function features_walkthrough(dir = mktempdir(); distributed = false)
 
     # 4. seeds: a one-job build elsewhere gives the same random values
     other = mktempdir()
-    write_features(other)
+    write_features(other; style)
     features_make(other; jobs = 1)
     same(name) = tar_read(name; store = demo_store(other), on_outdated = :ignore) ==
         read_target(name)
-    ok("seeded draws match across builds", same(:draws) && same(:reps))
-    write_features(dir; seed = 1)
+    ok("seeded draws match across builds", same(:draws) && same(:sims))
+    write_features(dir; style, seed = 1)
     reasons = Dict(r.name => r.reason for r in features_outdated(dir))
     ok(
         "a new pipeline seed is :seed_changed",
@@ -584,12 +525,12 @@ function features_walkthrough(dir = mktempdir(); distributed = false)
         "got $reasons",
     )
     s = features_make(dir; jobs = 4)
-    ok("seeded targets rebuilt", :draws in s.built && :reps in s.built, "built $(s.built)")
+    ok("seeded targets rebuilt", :draws in s.built && :sims in s.built, "built $(s.built)")
 
     # 5. cues and formats
-    write_features(dir; seed = 1, total = "sum(xs) + 0")
+    write_features(dir; style, seed = 1, total = "sum(xs) + 0")
     ok("Cue(code = false) ignores a helper edit", isempty(features_make(dir).built))
-    write_features(dir; seed = 1, total = "sum(xs) + 0", fast_format = :jld2)
+    write_features(dir; style, seed = 1, total = "sum(xs) + 0", fast_format = :jld2)
     reasons = Dict(r.name => r.reason for r in features_outdated(dir))
     ok(
         "changing a format is :format_changed",
@@ -633,7 +574,7 @@ function features_walkthrough(dir = mktempdir(); distributed = false)
         )
         try
             remote = mktempdir()
-            write_features(remote)
+            write_features(remote; style)
             exec = Base.invokelatest(
                 DistributedExecutor,
                 pids;
@@ -656,7 +597,14 @@ function features_walkthrough(dir = mktempdir(); distributed = false)
     return all_ok
 end
 
-if abspath(PROGRAM_FILE) == @__FILE__
-    walkthrough() || exit(1)
-    features_walkthrough(; distributed = "--distributed" in ARGS) || exit(1)
+"""
+    run_walkthroughs(args = ARGS; style = DEMO_STYLE)
+
+Both walkthroughs in `style`, on workers too if `args` has `--distributed`.
+Returns `true` if both passed.
+"""
+function run_walkthroughs(args = ARGS; style::DemoStyle = DEMO_STYLE)
+    core = walkthrough(; style)
+    features = features_walkthrough(; style, distributed = "--distributed" in args)
+    return core && features
 end

@@ -12,19 +12,34 @@
 # while `lowered` ones are not (those targets are *expected* to rebuild once, and the
 # run says so instead of failing).
 #
-# The store lives in `examples/.version_check/` (override with TARGETS_EXAMPLE_DIR).
+# The core demo is checked in both styles, since functions are hashed from their
+# source and macro targets from their expressions. The stores live in
+# `examples/.version_check/functions/` and `.../macros/` (override the parent
+# directory with TARGETS_EXAMPLE_DIR).
 
-include(joinpath(@__DIR__, "demo.jl"))
+include(joinpath(@__DIR__, "demo_functions.jl"))
+include(joinpath(@__DIR__, "demo_macros.jl"))
 
 function main(args)
-    dir = get(ENV, "TARGETS_EXAMPLE_DIR", joinpath(@__DIR__, ".version_check"))
-    "--reset" in args && reset_demo(dir)
+    root = get(ENV, "TARGETS_EXAMPLE_DIR", joinpath(@__DIR__, ".version_check"))
+    "--reset" in args && reset_demo(root)
+    statuses = [
+        check_style(style, joinpath(root, style_name(style)))
+        for style in (FunctionStyle(), MacroStyle())
+    ]
+    return maximum(statuses)
+end
+
+function check_style(style, dir)
     first_run = !isdir(demo_store(dir))
-    write_demo(dir) # same content every time: any rebuild comes from Julia, not edits
+    # same content every time: any rebuild comes from Julia, not edits
+    write_demo(dir; style)
 
     println(
         "Julia ",
         VERSION,
+        ", ",
+        style_name(style),
         first_run ? "  (first run: building the reference store)" : "",
     )
     summary = demo_make(dir; io = devnull)

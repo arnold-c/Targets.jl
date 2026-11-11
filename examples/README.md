@@ -1,14 +1,51 @@
 # Examples
 
 Two small projects for trying Targets by hand, a scripted walkthrough of each,
-and a check that hashes survive a Julia upgrade. Everything lives in
-[`demo.jl`](demo.jl) and [`version_check.jl`](version_check.jl).
+and a check that hashes survive a Julia upgrade. Each project's pipeline is
+written two ways, which give the same targets, dependencies and values:
+
+| Script | Declares the pipelines with |
+| --- | --- |
+| [`demo_functions.jl`](demo_functions.jl) | functions: `tar_pipeline`, `target`, `tar_map`, `tar_combine`, `tar_rep`; a target's dependencies are its function's argument names |
+| [`demo_macros.jl`](demo_macros.jl) | macros: `@pipeline`, `@target`, `@map`, `@rep`; a target's dependencies are the targets its expression refers to |
+
+Both include [`demo.jl`](demo.jl), which writes the projects, sets up their
+environments and runs the walkthroughs; [`version_check.jl`](version_check.jl)
+uses both. Below, `<style>` is `functions` or `macros`: pick a script and use
+it throughout.
 
 | Project | Directory (git-ignored) | Shows |
 | --- | --- | --- |
-| Core demo | `examples/.demo/` | `@pipeline`, file targets, change detection, early cutoff, dynamic and static branching, the DAG plot |
-| Feature demo | `examples/.demo-features/` | seeds, concurrent jobs and slots, storage formats, pattern combinators, `tar_rep`, error modes, retries, workspaces, tracebacks and warnings, cues, progress events, worker processes |
-| Version check | `examples/.version_check/` | hashes that do not change with the Julia version |
+| Core demo | `examples/.demo-<style>/` | file targets, change detection, early cutoff, dynamic and static branching, the DAG plot |
+| Feature demo | `examples/.features-<style>/` | seeds, concurrent jobs and slots, storage formats, pattern combinators, replication, error modes, retries, workspaces, tracebacks and warnings, cues, progress events, worker processes |
+| Version check | `examples/.version_check/<style>/` | hashes that do not change with the Julia version |
+
+The static branching of the core demo, in each style:
+
+```julia
+# demo_functions.jl
+shifts = tar_map((low = 1, high = 2)) do k
+    (
+        target(:shifted, cleaned -> cleaned .+ k),
+        target(:shift_summary, shifted -> summarize(shifted)),
+    )
+end
+tar_pipeline(
+    ...,
+    shifts,
+    tar_combine(:shifted_total, (summaries...) -> sum(s.total for s in summaries), shifts.shift_summary),
+)
+
+# demo_macros.jl
+@pipeline begin
+    ...
+    @map((low = 1, high = 2)) do k
+        @target shifted       = cleaned .+ k
+        @target shift_summary = summarize(shifted)
+    end
+    @target shifted_total = sum(s.total for s in shift_summary)   # all branches, by suffix
+end
+```
 
 Each project directory is a normal Julia project with its own environment, a
 `_targets.jl` pipeline and a `_targets/` store. Delete the directory to start
@@ -18,8 +55,9 @@ otherwise.
 ## Quick check: the scripted walkthroughs
 
 ```sh
-julia --project=. -t 4 examples/demo.jl                  # both walkthroughs
-julia --project=. -t 4 examples/demo.jl --distributed    # also build on 2 workers
+julia --project=. -t 4 examples/demo_macros.jl                   # both walkthroughs
+julia --project=. -t 4 examples/demo_macros.jl --distributed     # also build on 2 workers
+julia --project=. -t 4 examples/demo_functions.jl                # the same, with functions
 ```
 
 Each walkthrough runs in a temporary directory, prints `✓` or `✗` per step,
@@ -33,10 +71,10 @@ projects set up.
 ### Set up
 
 ```sh
-julia --project=. -e 'include("examples/demo.jl"); demo_setup()'
+julia --project=. -e 'include("examples/demo_<style>.jl"); demo_setup()'
 ```
 
-This writes `examples/.demo/` and gives it an environment with this
+This writes `examples/.demo-<style>/` and gives it an environment with this
 repository's Targets and three Makie backends: CairoMakie (static figures),
 GLMakie (an interactive window) and WGLMakie (an interactive browser tab).
 The project contains:
@@ -47,13 +85,14 @@ The project contains:
   - `raw_file` (a file target), then `raw`, `cleaned`
   - `grid`, a pattern target with three elements
   - `scores`, branching over `grid`, then `report`
-  - `shifted_low/high` and `shift_summary_low/high`, from `tar_map`
-  - `shifted_total`, from `tar_combine`
+  - `shifted_low/high` and `shift_summary_low/high`, from `tar_map` or `@map`
+  - `shifted_total`, combining the `shift_summary` targets (`tar_combine`, or a
+    `@target` that refers to the template's name)
 
 ### Run it interactively
 
 ```
-cd examples/.demo
+cd examples/.demo-<style>
 julia --project=.
 julia> using Targets, CairoMakie   # or GLMakie, or WGLMakie
 julia> tar_make()          # builds all 11 targets
@@ -80,7 +119,7 @@ call resets the other knobs to their defaults, so repeat earlier changes if
 you want to keep them.
 
 ```
-julia> include("../demo.jl")
+julia> include("../demo_<style>.jl")
 julia> write_demo(; scale = 4)
 julia> tar_outdated()
 julia> tar_make()
@@ -92,8 +131,8 @@ julia> tar_make()
 | `discount = "x + 0"` | a helper two calls deep from `scores`, same results | `scores` only; `report` is kept (early cutoff) |
 | `scale = 4` | a `const` that `score` reaches | `scores`, `report` |
 | `grid = "[0.1, 0.5, 1.0, 2.0]"` | adds an element to the pattern | `grid`, one new `scores` branch, `report` |
-| `shifts = "(low = 1, high = 3)"` | one `tar_map` value | `shifted_high`, `shift_summary_high`, `shifted_total` |
-| `shifts = "(low = 1, mid = 2, high = 2)"` | adds a `tar_map` value | the new `*_mid` targets, `shifted_total` |
+| `shifts = "(low = 1, high = 3)"` | one `tar_map`/`@map` value | `shifted_high`, `shift_summary_high`, `shifted_total` |
+| `shifts = "(low = 1, mid = 2, high = 3)"` | adds a `tar_map`/`@map` value | the new `*_mid` targets, `shifted_total` |
 | `data = "1.0 2.0 NaN 4.0 8.0"` | the input file | everything downstream of `raw_file` (not `grid`) |
 | `touch("data/raw.csv")` | modification time only | nothing |
 
@@ -124,10 +163,10 @@ It ends with `All steps behaved.`
 ### Set up
 
 ```sh
-julia --project=. -e 'include("examples/demo.jl"); features_setup()'
+julia --project=. -e 'include("examples/demo_<style>.jl"); features_setup()'
 ```
 
-This writes `examples/.demo-features/` with an environment (Targets,
+This writes `examples/.features-<style>/` with an environment (Targets,
 CairoMakie, GLMakie, WGLMakie, Distributed), a pipeline in `_targets.jl` and helpers in
 `features.jl`. It also creates two **marker files**, so that the first build
 shows the error handling:
@@ -141,13 +180,13 @@ The pipeline has one target per feature:
 | --- | --- |
 | `mus`, `sizes` | pattern targets (`[0.0, 10.0, 20.0]`, `[1, 2]`) |
 | `draws` | seeded random branches over `mus` (`simulate` adds `NOISE * randn()`) |
-| `combos` | `pattern = Cross(:mus, :sizes)`: 6 branches |
-| `paired` | `pattern = Map(Head(:mus, 2), :sizes)`: 2 branches |
-| `sampled` | `pattern = Sample(:mus, 2)`: 2 branches picked with the target's seed |
-| `reps` (+ `reps_batch`, `reps_batches`) | `tar_rep(...; batches = 2, reps = 5)`: 10 replications |
+| `combos` | `pattern = Cross(:mus, :sizes)` (macros: `cross(mus, sizes)`): 6 branches |
+| `paired` | `pattern = Map(Head(:mus, 2), :sizes)` (`map(head(mus, 2), sizes)`): 2 branches |
+| `sampled` | `pattern = Sample(:mus, 2)` (`sample(mus, 2)`): 2 branches picked with the target's seed |
+| `sims` (+ `sims_batch`, `sims_batches`) | `tar_rep(...; batches = 2, reps = 5)` (`@rep ... batches = 2 reps = 5`): 10 replications |
 | `fragile_fits` | `error = :trim`: failed branches are left out |
 | `maybe`, `uses_maybe` | `error = :null`: the consumer receives `nothing` |
-| `flaky` | `retries = 2`: fails on its first attempt only |
+| `flaky` | `retries = 2`: fails on its first attempt only (with macros, `@target flaky = flaky()` calls the function `flaky`: a target's own name is never a dependency) |
 | `noisy` | logs a warning, which is recorded in its metadata |
 | `exclusive` | `slots = :all`: returns `tar_slots()` |
 | `on_main` | `deployment = :main`: runs in the calling task |
@@ -160,7 +199,7 @@ Start Julia with threads, so that concurrent targets really run in parallel.
 `jobs = 4` also works on one thread, but then the tasks only take turns.
 
 ```
-cd examples/.demo-features
+cd examples/.features-<style>
 julia --project=. -t 4
 julia> using Targets, GLMakie   # or CairoMakie, or WGLMakie
 julia> tar_make(; jobs = 4)
@@ -184,9 +223,9 @@ Look around:
 | `tar_read(:flaky)` | `2`: succeeded on the second attempt |
 | `tar_read(:exclusive)` | `4`: all four slots of `jobs = 4` |
 | `tar_read(:combos)` | `[0.0, 0.0, 10.0, 20.0, 20.0, 40.0]` |
-| `tar_read(:reps)` | 10 random numbers |
+| `tar_read(:sims)` | 10 random numbers |
 | `tar_errored()` | rows for `fragile_fits`, its failed branch, and `maybe` |
-| `tar_traceback(:maybe)` | the frames of `error`, `maybe_value` (features.jl) and the target's lambda (_targets.jl), with no Targets internals |
+| `tar_traceback(:maybe)` | the frames of `error`, `maybe_value` (features.jl) and the target's function or expression (_targets.jl), with no Targets internals |
 | `tar_workspace(:maybe)` | `NamedTuple()`: the saved arguments (`maybe` has none) |
 | `tar_rerun(:maybe)` | throws `no value today` again, in your session, with the same seed |
 | `tar_meta()` | the `noisy` row has `warnings = ["only 3 values"]` |
@@ -208,7 +247,7 @@ empty.
 ### Make edits
 
 ```
-julia> include("../demo.jl")
+julia> include("../demo_<style>.jl")
 ```
 
 Each `write_features` call rewrites the project. As with `write_demo`, knobs
@@ -249,10 +288,10 @@ workers):
 
 | Group | Checks |
 | --- | --- |
-| first build (`jobs = 4`, with failures) | `errored == [:maybe]`; `:null` gives `"no value"`; `:trim` gives `[0.0, 200.0]`; retry gives `2`; `slots = :all` sees 4; `Cross`, `Map(Head(...))`, `Sample` and `tar_rep` sizes; `fast.jls` exists |
+| first build (`jobs = 4`, with failures) | `errored == [:maybe]`; `:null` gives `"no value"`; `:trim` gives `[0.0, 200.0]`; retry gives `2`; `slots = :all` sees 4; `Cross`, `Map(Head(...))`, `Sample` and replication sizes; `fast.jls` exists |
 | debugging | `tar_errored` lists `maybe`; the workspace is saved; `tar_rerun` reproduces `no value today`; the traceback mentions `maybe_value`; the warning is recorded |
 | after fixing | exactly `fragile_fits`, `maybe`, `uses_maybe` rebuild; the trimmed branch is back; nothing is outdated |
-| seeds | a separate 1-job build gives the same `draws` and `reps`; a new seed is `:seed_changed` and rebuilds the seeded targets |
+| seeds | a separate 1-job build gives the same `draws` and `sims`; a new seed is `:seed_changed` and rebuilds the seeded targets |
 | cues and formats | `Cue(code = false)` ignores a helper edit; a format change is `:format_changed` and rebuilds only `fast` |
 | progress | `tar_progress()` shows `fast` as built |
 | `check_mutation` | a target that `push!`es onto its input is caught |
@@ -269,9 +308,11 @@ server. Their tests in `src/urls.jl` use a local one.
 
 ## 3. Version check
 
-`version_check.jl` builds the core demo once, then rebuilds it under other
-Julia versions against the same store (`examples/.version_check/`). With
-juliaup:
+`version_check.jl` builds the core demo once in each style, then rebuilds
+them under other Julia versions against the same stores
+(`examples/.version_check/functions/` and `.../macros/`). Functions are
+hashed from their source and macro targets from their expressions, so both
+are checked. With juliaup:
 
 ```sh
 julia +1.10 examples/version_check.jl --reset    # reference build
@@ -279,12 +320,12 @@ julia +1.11 examples/version_check.jl            # must build nothing
 julia +release examples/version_check.jl         # must build nothing
 ```
 
-Each run prints the targets built and skipped, and per target how its code was
-hashed:
+Each run prints, per style, the targets built and skipped, and per target how
+its code was hashed:
 
 - **`source`:** stable across Julia versions.
 - **`lowered`:** not stable, so a version change may rebuild that target once.
   This is reported as expected, not as a failure.
 
-A later run exits with status 1 if any source-hashed target was rebuilt.
-Set `TARGETS_EXAMPLE_DIR` to put the store somewhere else.
+A later run exits with status 1 if any source-hashed target was rebuilt in
+either style. Set `TARGETS_EXAMPLE_DIR` to put the stores somewhere else.
