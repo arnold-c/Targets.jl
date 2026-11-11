@@ -280,6 +280,7 @@ explanation rather than record the wrong hashes. Load Revise, restart, or use
   [Targets]
   on_outdated = "error"   # or "warn" (default), "ignore"
   store = "/scratch/me/_targets"   # the default store, relative to the project root
+  jobs = "auto"   # tar_make's default jobs: a number, or "auto" (Threads.nthreads(:default))
   ```
 
 - Put functions and types in a **named module or package**. Values are stored with

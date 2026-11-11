@@ -240,7 +240,8 @@ end
 """
     tar_make(p::Pipeline; names = nothing, force = false, store = default_store_path(),
              root = nothing, keep_going = false, track_manifest = false,
-             check_stale = true, jobs = 1, executor = nothing, check_mutation = false,
+             check_stale = true, jobs = nothing, executor = nothing,
+             check_mutation = false,
              io = stdout, progress = :auto)
 
 Build the targets of `p` that are outdated, in dependency order, and return a
@@ -266,15 +267,29 @@ would then describe code the session is not running.
 Values are kept in memory only while a target in this run still needs them, so
 memory use follows the width of the pipeline, not its length.
 
-With `jobs = n` (or `:auto`, one per default thread), up to `n` independent
-targets and branches run at once, each as a Julia task; targets on the longest
-remaining path (by their last build times) start first. A target occupies its
-`slots` of the `n` while it runs, and `deployment = :main` targets run in the
-calling task. Concurrent targets share the process: they must not `cd`, change
-`ENV` or mutate their arguments (consumers of one upstream share its value),
-and BLAS-heavy targets may want `BLAS.set_num_threads(1)`. After a failure,
-running jobs are finished and committed before the error is rethrown; on
-interrupt, running jobs are waited for (interrupt again to abandon them).
+With `jobs = n`, up to `n` independent targets and branches run at once, each
+as a Julia task; targets on the longest remaining path (by their last build
+times) start first. `jobs = :auto` is one job per thread of the default
+threadpool (`Threads.nthreads(:default)`, so `1` when Julia runs on one
+thread). `jobs` counts tasks, not threads: more jobs than threads still overlap
+targets that wait on I/O (downloads, files, external commands), but CPU-bound
+targets only take turns, so start Julia with threads (e.g. `julia -t 8`) to
+run them in parallel. Without `jobs` (or `executor`), it is the `jobs`
+preference of Targets, else `1`; only then is the preference read. Set it for a
+project in `LocalPreferences.toml`:
+
+```toml
+[Targets]
+jobs = "auto"   # or a number such as 4
+```
+
+A target occupies its `slots` of the `n` while it runs, and `deployment = :main`
+targets run in the calling task. Concurrent targets share the process: they
+must not `cd`, change `ENV` or mutate their arguments (consumers of one upstream
+share its value), and BLAS-heavy targets may want `BLAS.set_num_threads(1)`.
+After a failure, running jobs are finished and committed before the error is
+rethrown; on interrupt, running jobs are waited for (interrupt again to abandon
+them).
 
 `check_mutation = true` hashes every argument before and after each call and
 errors, naming the target and argument, if a target modified its input. It is
@@ -305,14 +320,14 @@ function build_pipeline(
     keep_going::Bool = false,
     track_manifest::Bool = false,
     check_stale::Bool = true,
-    jobs::Union{Integer, Symbol} = 1,
+    jobs::Union{Nothing, Integer, Symbol} = nothing,
     executor::Union{Nothing, Executor} = nothing,
     check_mutation::Bool = false,
     io::IO = stdout,
     progress::Symbol = :auto,
     observe::Function = ctx -> nothing,
 )
-    exec = something(executor, TaskExecutor(jobs))
+    exec = executor === nothing ? TaskExecutor(chosen_jobs(jobs)) : executor
     slots = capacity(exec)
     rootdir = something(root, project_root())
     s = store isa Store ? store : open_store(store)
@@ -440,7 +455,7 @@ function tar_make_fresh(
     keep_going::Bool = false,
     track_manifest::Bool = false,
     check_stale::Bool = true,
-    jobs::Union{Integer, Symbol} = 1,
+    jobs::Union{Nothing, Integer, Symbol} = nothing,
     check_mutation::Bool = false,
     io::IO = stdout,
     progress::Symbol = :auto,
@@ -459,7 +474,7 @@ function tar_make_fresh(
         keep_going = $(repr(keep_going)),
         track_manifest = $(repr(track_manifest)),
         check_stale = $(repr(check_stale)),
-        jobs = $(repr(jobs)),
+        jobs = $(repr(chosen_jobs(jobs))),
         check_mutation = $(repr(check_mutation)),
     progress = $(repr(progress)),
     )

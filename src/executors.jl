@@ -24,8 +24,10 @@ struct TaskExecutor <: Executor
     jobs::Int
     results::Channel{JobResult}
 end
-TaskExecutor(n::Union{Integer, Symbol}) =
-    TaskExecutor(resolve_jobs(n), Channel{JobResult}(Inf))
+TaskExecutor(n::Union{Integer, Symbol}) = TaskExecutor(
+    resolve_jobs(n),
+    Channel{JobResult}(Inf),
+)
 
 capacity(e::TaskExecutor) = e.jobs
 function submit!(e::TaskExecutor, job::Job, slots::Int)

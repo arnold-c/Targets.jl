@@ -31,6 +31,26 @@ function resolve_jobs(jobs)
     return Int(jobs)
 end
 
+"""
+    jobs_preference()
+
+The `jobs` of a [`tar_make`](@ref) without one: the `jobs` preference of
+Targets (e.g. in `LocalPreferences.toml`), a positive integer or `"auto"`, else
+`1`.
+"""
+function jobs_preference()
+    jobs = Preferences.load_preference(@__MODULE__, "jobs", 1)
+    jobs == "auto" && return :auto
+    (jobs isa Integer && jobs >= 1) && return Int(jobs)
+    throw(ArgumentError(
+        "the `jobs` preference of Targets must be a positive integer or \"auto\", " *
+            "got `$(repr(jobs))`",
+    ))
+end
+
+"`jobs` as given to `tar_make`, or the preference when it is `nothing` (only then is the preference read)."
+chosen_jobs(jobs) = jobs === nothing ? jobs_preference() : jobs
+
 "Run `job` with `slots` granted; never throws, so a spawned job always reports back."
 function execute_granted(job::Job, slots::Int)
     try
@@ -396,6 +416,38 @@ end
     @test capacity(TaskExecutor(:auto)) == Threads.nthreads(:default)
     @test capacity(TaskExecutor(3)) == 3
     @test_throws "jobs must be a positive integer" TaskExecutor(:many)
+end
+
+@testitem "the jobs default comes from the Targets preference" begin
+    using Targets: jobs_preference
+    @test jobs_preference() == 1
+    mktempdir() do dir
+        write(
+            joinpath(dir, "Project.toml"),
+            "[deps]\nTargets = \"ccd79084-dcf1-4aa0-8fea-6744ff5e7af6\"\n",
+        )
+        prefer(value) = write(
+            joinpath(dir, "LocalPreferences.toml"),
+            "[Targets]\njobs = $value\n",
+        )
+        pushfirst!(LOAD_PATH, dir)
+        try
+            prefer("4")
+            @test jobs_preference() == 4
+            prefer("\"auto\"")
+            @test jobs_preference() == :auto
+            for bad in ("0", "\"many\"", "2.5")
+                prefer(bad)
+                @test_throws "the `jobs` preference of Targets" jobs_preference()
+            end
+            # an explicit `jobs` never reads the (here invalid) preference
+            @test Targets.chosen_jobs(2) == 2
+            @test Targets.chosen_jobs(:auto) == :auto
+            @test_throws "the `jobs` preference of Targets" Targets.chosen_jobs(nothing)
+        finally
+            popfirst!(LOAD_PATH)
+        end
+    end
 end
 
 @testitem "the package never reasons about thread ids" begin
