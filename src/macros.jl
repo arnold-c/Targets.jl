@@ -40,6 +40,31 @@ macro quarto(args...)
     )
 end
 
+"""
+    @map(values; names = nothing, prefix = false) do value
+        @target ...
+        ...
+    end
+
+Inside [`@targets`](@ref) or [`@pipeline`](@ref), declare the block's targets
+once for each element of `values`, as [`tar_map`](@ref) does: each name gets
+the element's suffix (`fit_ols`), or, with `prefix = true`, starts with it
+(`ols_fit`). `names` chooses the suffixes, as in `tar_map`. The block may use
+`value`, assign variables and splice in fragments, like any `@targets` block,
+and `@map`s nest.
+
+Within a branch, a name refers to that branch's target. Outside the `@map`, a
+template's name refers to all of its targets: its value is a `NamedTuple`
+keyed by suffix (nested for nested `@map`s), so `collect(chain)` gives the
+values in order.
+"""
+macro map(args...)
+    error(
+        "@map can only be used inside @targets or @pipeline, as `@map(values) do value ... end`; " *
+            "use `tar_map` to map targets on their own",
+    )
+end
+
 ## Parsing a block
 
 struct TargetLine
@@ -65,6 +90,15 @@ end
 "Any other line: its value (targets or a fragment) joins the block."
 struct SpliceLine
     ex::Any
+    line::LineNumberNode
+end
+
+"`@map(values; options...) do arguments ... end`, with its parsed block."
+struct MapLine
+    values::Any
+    options::Vector{Pair{Symbol, Any}}
+    arguments::Expr
+    body::Any
     line::LineNumberNode
 end
 
@@ -143,9 +177,43 @@ is_macro_line(ex, name) = Meta.isexpr(ex, :macrocall) && ex.args[1] === Symbol(n
 # `f(x) = ...` defines a function, which belongs outside the block.
 is_assignment(ex) = Meta.isexpr(ex, :(=)) && !Meta.isexpr(ex.args[1], (:call, :where))
 
+const MAP_OPTIONS = (:names, :prefix)
+
+function parse_map_line(ex, line::LineNumberNode)
+    usage = "expected `@map(values; names = ..., prefix = ...) do value ... end`"
+    Meta.isexpr(ex, :do) || error(location_prefix(line) * usage * ", got `$ex`")
+    call, lambda = ex.args
+    args = Any[a for a in call.args[3:end] if !(a isa LineNumberNode)]
+    options = Pair{Symbol, Any}[]
+    positional = Any[]
+    for a in args
+        if Meta.isexpr(a, :parameters)
+            append!(options, (kw.args[1] => kw.args[2] for kw in a.args))
+        elseif Meta.isexpr(a, (:(=), :kw))
+            push!(options, a.args[1] => a.args[2])
+        else
+            push!(positional, a)
+        end
+    end
+    length(positional) == 1 || error(location_prefix(line) * usage * ", got `$call`")
+    for (k, _) in options
+        k in MAP_OPTIONS ||
+            error(location_prefix(line) * "@map accepts the options `names` and `prefix`, got `$k`")
+    end
+    arguments, body = lambda.args
+    return MapLine(only(positional), options, arguments, parse_map_body(body, arguments), line)
+end
+
+function parse_map_body(body, arguments::Expr)
+    names = collect(ExpressionExplorer.compute_reactive_node(Expr(:(=), arguments, 0)).definitions)
+    return parse_block(body; arguments = names)
+end
+
 function parse_line(ex, line::LineNumberNode)
     is_macro_line(ex, "@target") && return parse_target_line(ex, line)
     is_macro_line(ex, "@quarto") && return parse_quarto_line(ex, line)
+    (is_macro_line(ex, "@map") || (Meta.isexpr(ex, :do) && is_macro_line(ex.args[1], "@map"))) &&
+        return parse_map_line(ex, line)
     is_assignment(ex) && return AssignLine(ex, line)
     Meta.isexpr(ex, :(=)) &&
         error(
@@ -156,6 +224,8 @@ function parse_line(ex, line::LineNumberNode)
 end
 
 declared_names(t::Union{TargetLine, QuartoLine}) = [t.name]
+# A @map's templates are names of the enclosing block too (each its group).
+declared_names(m::MapLine) = collect(m.body.targets)
 declared_names(_) = Symbol[]
 
 function assigned_names(a::AssignLine)
@@ -351,6 +421,19 @@ push_code(acc, declaration) = Expr(:call, GlobalRef(Base, :push!), acc, declarat
 item_code(t::TargetLine, acc, scopes, mod) = push_code(acc, target_code(t, scopes, mod))
 item_code(q::QuartoLine, acc, scopes, mod) = push_code(acc, quarto_code(q))
 item_code(a::AssignLine, acc, scopes, mod) = a.ex
+function item_code(m::MapLine, acc, scopes, mod)
+    options = Any[Expr(:kw, k, v) for (k, v) in m.options]
+    push!(options, Expr(:kw, :line, QuoteNode(m.line)))
+    template = Expr(:->, m.arguments, block_code(m.body, scopes, mod))
+    declaration = Expr(
+        :call,
+        GlobalRef(@__MODULE__, :map_declaration),
+        Expr(:parameters, options...),
+        template,
+        m.values,
+    )
+    return push_code(acc, declaration)
+end
 item_code(s::SpliceLine, acc, scopes, mod) = Expr(
     :call,
     GlobalRef(Base, :append!),
@@ -788,4 +871,166 @@ end
             ),
         )
     end
+end
+
+@testitem "@map matches tar_map: names, dependencies, order and groups" setup = [
+    MacroFixtures,
+] begin
+    m = tar_map((:a, :b)) do k
+        (
+            target(:grid, () -> [1, 2]),
+            target(:fit, (raw, grid) -> (k, raw, grid); pattern = :grid),
+            target(:summary, fit -> fit),
+        )
+    end
+    q = tar_pipeline(target(:raw, () -> 1), m, tar_combine(:all, (xs...) -> xs, m.summary))
+    p = @pipeline begin
+        @target raw = 1
+        @map((:a, :b)) do k
+            @target grid = [1, 2]
+            @target fit = (k, raw, grid) pattern = grid
+            @target summary = fit
+        end
+        @target all = Tuple(summary)
+    end
+    @test same_graph(p, q)
+    @test p.groups == q.groups
+    @test Targets.get_target(p, :fit_b).pattern == :grid_b
+    mktempdir() do dir
+        store = joinpath(dir, "_targets")
+        tar_make(p; store, root = dir, io = devnull)
+        @test tar_read(:all; store) == ([(:a, 1, 1), (:a, 1, 2)], [(:b, 1, 1), (:b, 1, 2)])
+    end
+end
+
+@testitem "nested @maps with prefixes, and groups as nested NamedTuples" begin
+    p = @pipeline begin
+        @target mcmc = (; iterations = 10)
+        @map((seir = 1, staged = 2)) do model
+            @map((real = :real, synthetic = :synthetic); prefix = true) do source
+                @target data = (model, source)
+                @target tuning = data
+                @map(1:2) do k
+                    @target chain = (tuning, k, mcmc.iterations)
+                end
+                @target fit = collect(chain)
+            end
+        end
+        @target fits = fit
+    end
+    names = [t.name for t in p.targets]
+    @test :real_chain_1_seir in names && :synthetic_fit_staged in names
+    get(n) = Targets.get_target(p, n)
+    @test get(:real_tuning_seir).deps == [:real_data_seir]
+    @test get(:real_chain_1_seir).deps == [:real_tuning_seir, :mcmc]
+    @test get(:real_fit_seir).deps == [:real_chain_1_seir, :real_chain_2_seir]
+    @test get(:fits).deps ==
+        [:real_fit_seir, :synthetic_fit_seir, :real_fit_staged, :synthetic_fit_staged]
+    @test p.groups[:real_fit] == [:real_fit_seir, :real_fit_staged]
+    @test p.groups[:real_chain_1] == [:real_chain_1_seir, :real_chain_1_staged]
+    mktempdir() do dir
+        store = joinpath(dir, "_targets")
+        tar_make(p; store, root = dir, io = devnull)
+        fits = tar_read(:fits; store)
+        @test keys(fits) == (:seir, :staged)
+        @test keys(fits.seir) == (:real, :synthetic)
+        @test fits.staged.synthetic == [((2, :synthetic), 1, 10), ((2, :synthetic), 2, 10)]
+    end
+end
+
+@testitem "a fragment spliced into a @map refers to that branch's targets" begin
+    mcmc_fit(; chains) = @targets begin
+        @map(1:chains) do k
+            @target chain = data + k
+        end
+        @target fit = sum(chain)
+    end
+    p = @pipeline begin
+        @map((a = 10, b = 20)) do v
+            (; scale) = (; scale = v)
+            @target data = scale
+            mcmc_fit(; chains = 2)
+            target(:doubled, data -> 2data)
+        end
+    end
+    @test Targets.get_target(p, :chain_1_a).deps == [:data_a]
+    @test Targets.get_target(p, :doubled_b).deps == [:data_b]
+    @test Targets.get_target(p, :fit_b).deps == [:chain_1_b, :chain_2_b]
+    mktempdir() do dir
+        store = joinpath(dir, "_targets")
+        tar_make(p; store, root = dir, io = devnull)
+        @test tar_read(:fit_a; store) == 23
+        @test tar_read(:fit_b; store) == 43
+    end
+end
+
+@testitem "@map: changing one value rebuilds only its branch" setup = [SourceFixtures] begin
+    mktempdir() do dir
+        code(lasso) = """
+        p = @pipeline begin
+            @target raw = 10
+            @map((ols = 1, lasso = $lasso)) do w
+                @target fit = raw * w
+                @target summary = fit + 1
+            end
+            @target all = sum(summary)
+        end
+        """
+        @test build_source(code(2), dir).built ==
+            [:raw, :fit_ols, :fit_lasso, :summary_ols, :summary_lasso, :all]
+        @test read_values(dir, :all) == (32,)
+        s = build_source(code(3), dir)
+        @test s.built == [:fit_lasso, :summary_lasso, :all]
+        @test read_values(dir, :all) == (42,)
+    end
+end
+
+@testitem "@map reports bad usage" begin
+    m = Module(:MapErrors)
+    Core.eval(m, :(using Targets))
+    @test_throws "inside @targets or @pipeline" Core.eval(m, :(@map(1:2) do k
+        k
+    end))
+    @test_throws "expected `@map(values" Core.eval(
+        m,
+        :(
+            @targets begin
+                @map(1:2)
+            end
+        ),
+    )
+    @test_throws "options `names` and `prefix`" Core.eval(
+        m,
+        :(
+            @targets begin
+                @map(1:2; suffix = true) do k
+                    @target x = k
+                end
+            end
+        ),
+    )
+    @test_throws "pass `names = ...`" Core.eval(
+        m,
+        :(
+            @targets begin
+                @map(1:2; prefix = true) do k
+                    @target x = k
+                end
+            end
+        ),
+    )
+    @test_throws "is ambiguous" Core.eval(
+        m,
+        :(
+            @pipeline begin
+                @map((:a, :b)) do k
+                    @target x = k
+                end
+                @map((:c, :d)) do k
+                    @target x = k
+                end
+                @target y = x
+            end
+        ),
+    )
 end
