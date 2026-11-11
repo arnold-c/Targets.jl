@@ -352,7 +352,7 @@ default_script() = joinpath(project_root(), "_targets.jl")
 "Load a pipeline script into a fresh module, so no state leaks from the REPL between runs."
 function load_pipeline(script::AbstractString)
     isfile(script) || error("no pipeline script at $script")
-    m = Module(:TargetsScript)
+    m = register_script!(script, Module(:TargetsScript))
     Core.eval(m, :(using Targets))
     # a plain Module has no `include`/`eval`, which scripts reasonably expect
     Core.eval(m, :(include(path::AbstractString) = Base.include($m, path)))

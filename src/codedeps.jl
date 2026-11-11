@@ -36,6 +36,42 @@ function is_user_module(mod::Module, roots::Vector{String})
     return path !== nothing && is_user_file(path, roots)
 end
 
+## Earlier loads of a pipeline script
+##
+## Each load of a script goes into a fresh module, and the methods it defined
+## stay in the method tables of the functions it extended (every keyword
+## function adds one to `Core.kwcall`). Once a script is loaded again, the
+## earlier module's methods describe old code: they are not user code any more.
+
+const LATEST_SCRIPTS = Dict{String, Module}()
+const SUPERSEDED_SCRIPTS = Base.IdSet{Module}()
+const SCRIPTS_LOCK = ReentrantLock()
+
+"Record that `m` holds the latest load of the pipeline script at `path`."
+function register_script!(path::AbstractString, m::Module)
+    lock(SCRIPTS_LOCK) do
+        old = get(LATEST_SCRIPTS, abspath(path), nothing)
+        old === nothing || push!(SUPERSEDED_SCRIPTS, old)
+        LATEST_SCRIPTS[abspath(path)] = m
+    end
+    return m
+end
+
+"Whether `mod` is (inside) a script module that a later load replaced."
+function superseded(mod::Module)
+    lock(SCRIPTS_LOCK) do
+        while true
+            mod in SUPERSEDED_SCRIPTS && return true
+            parent = parentmodule(mod)
+            parent === mod && return false
+            mod = parent
+        end
+    end
+end
+
+is_user_method(m::Method, roots::Vector{String}) = is_user_file(m.file, roots) &&
+    !superseded(m.module)
+
 struct MethodInfo
     hash::CommandHash
     refs::Vector{Tuple{Module, Symbol}}
@@ -107,7 +143,11 @@ function collect_refs!(refs, mod::Module, x::Expr)
 end
 
 # Lowered code refers to globals through `GlobalRef`s, so no resolution by name is needed.
-collect_lowered_refs!(refs, x::GlobalRef) = push!(refs, (x.mod, x.name))
+# A keyword call lowers to `Core.kwcall(kwargs, f, args...)`, which names `f` too;
+# following `Core.kwcall` itself would reach every keyword method there is.
+collect_lowered_refs!(refs, x::GlobalRef) = x == GlobalRef(Core, :kwcall) ?
+    refs :
+    push!(refs, (x.mod, x.name))
 collect_lowered_refs!(refs, x::Expr) = foreach(a -> collect_lowered_refs!(refs, a), x.args)
 collect_lowered_refs!(refs, x::AbstractVector) = foreach(
     a -> collect_lowered_refs!(refs, a),
@@ -143,10 +183,10 @@ function expand_for_refs(mod::Module, expr)
     end
 end
 
-function method_info(d::Discovery, m::Method; lowered_refs::Bool = false)
+function method_info(d::Discovery, m::Method)
     get!(d.infos, m) do
         refs = Tuple{Module, Symbol}[]
-        exprs = lowered_refs ? nothing : method_source(m)
+        exprs = method_source(m)
         if exprs !== nothing
             for e in exprs
                 collect_macro_refs!(refs, m.module, e)
@@ -174,7 +214,7 @@ end
 
 function enqueue!(w::Walk, m::Method)
     m in w.seen_methods && return nothing
-    is_user_file(m.file, w.d.roots) || return nothing
+    is_user_method(m, w.d.roots) || return nothing
     push!(w.seen_methods, m)
     push!(w.queue, m)
     return nothing
@@ -214,7 +254,7 @@ function consider_type!(w::Walk, T)
     T0 === Any && return nothing
     T0 in w.seen_values && return nothing
     push!(w.seen_values, T0)
-    constructors = filter(m -> is_user_file(m.file, w.d.roots), collect(methods(T0)))
+    constructors = filter(m -> is_user_method(m, w.d.roots), collect(methods(T0)))
     (!isempty(constructors) || is_user_module(T0.name.module, w.d.roots)) || return nothing
     push!(w.entries, "type:$(T0.name.module).$(stable_name(T0.name.name))=$(type_hash(T0))")
     foreach(m -> enqueue!(w, m), constructors)
@@ -244,17 +284,37 @@ function consider_binding!(w::Walk, mod::Module, name::Symbol)
     return nothing
 end
 
-"The methods of a target's own function, whose hash is the command hash."
-own_methods(f) = collect(methods(f))
-own_methods(c::MacroCommand) = collect(methods(c.body))
-own_methods(r::RepCommand) = own_methods(r.command)
+"""
+Start walking from a target's own code. A function's methods are walked
+(their hash is the command hash, so they add no entries). A `@target` is
+followed from its expression, as for any method with source: its body's
+lowered code would add what lowering introduces, such as `Core.kwcall`.
+"""
+function start_walk!(w::Walk, f, source)
+    own = collect(methods(f))
+    union!(w.own, own)
+    union!(w.seen_methods, own)
+    append!(w.queue, own)
+    return nothing
+end
+start_walk!(w::Walk, r::RepCommand, source) = start_walk!(w, r.command, source)
+function start_walk!(w::Walk, c::MacroCommand, source)
+    foreach(m -> push!(w.d.files, String(m.file)), methods(c.body))
+    refs = Tuple{Module, Symbol}[]
+    collect_macro_refs!(refs, c.mod, source)
+    collect_refs!(refs, c.mod, expand_for_refs(c.mod, source))
+    for (mod, name) in refs
+        # names the target takes as dependencies or from its scope: see below
+        (mod === c.mod && name in c.refs) || consider_binding!(w, mod, name)
+    end
+    consider_scope!(w, c)
+    return nothing
+end
 
 """
-Follow the values a `@target` takes from where it was declared: its body
-receives them as arguments, so its lowered code does not name them.
+Follow the values a `@target` takes from where it was declared (not those of
+its dependencies, which have the same names).
 """
-consider_scope!(::Walk, f) = nothing
-consider_scope!(w::Walk, r::RepCommand) = consider_scope!(w, r.command)
 function consider_scope!(w::Walk, c::MacroCommand)
     scope = scope_values(c)
     for (name, input) in zip(c.refs, c.inputs)
@@ -287,15 +347,11 @@ function code_hash(d::Discovery, t::Target)
         Base.IdSet{Any}(),
         String[],
     )
-    own = own_methods(t.f)
-    union!(w.own, own)
-    union!(w.seen_methods, own)
-    append!(w.queue, own)
-    consider_scope!(w, t.f)
+    start_walk!(w, t.f, t.source)
     while !isempty(w.queue)
         m = pop!(w.queue)
         is_own = m in w.own
-        info = method_info(d, m; lowered_refs = is_own && t.source !== nothing)
+        info = method_info(d, m)
         push!(d.files, String(m.file))
         if !is_own
             info.hash.hash === nothing ||
@@ -631,5 +687,43 @@ end
         t = Base.invokelatest(getproperty, m, :t)
         d = Discovery(user_roots(dir, []))
         @test there == string(command_hash(t).hash, " ", code_hash(d, t))
+    end
+end
+
+@testitem "a macro target's code hash follows what it calls, not every keyword function" setup = [
+    CodeFixtures,
+] begin
+    # A keyword call lowers to `Core.kwcall`, whose methods are every keyword
+    # function's: the target's code is followed from its expression instead.
+    code(; helper = "x + k", unrelated = "x - k") = """
+    helper(x; k = 1) = $helper
+    unrelated(x; k = 1) = $unrelated
+    p = @pipeline begin
+        @target a = helper(1; k = 2)
+    end
+    t = only(p.targets)
+    """
+    base, _ = reach(code())
+    @test reach(code(; unrelated = "x * k"))[1] == base
+    @test reach(code(; helper = "x * k"))[1] != base
+end
+
+@testitem "methods from an earlier load of a pipeline script are not user code" begin
+    using Targets: Discovery, user_roots, code_hash, load_pipeline
+    mktempdir() do dir
+        script = joinpath(dir, "_targets.jl")
+        # Each load defines a new `Box`, so `length` gains a method per load.
+        write(
+            script,
+            """
+            struct Box end
+            Base.length(::Box) = 2
+            tar_pipeline(target(:a, () -> length([1])))
+            """,
+        )
+        hash_of(p) = code_hash(Discovery(user_roots(dir, [])), only(p.targets))
+        first_load = hash_of(load_pipeline(script))
+        @test hash_of(load_pipeline(script)) == first_load
+        @test hash_of(load_pipeline(script)) == first_load
     end
 end
