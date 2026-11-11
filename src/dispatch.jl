@@ -391,6 +391,13 @@ end
     end
 end
 
+@testitem "jobs = :auto gives one slot per default thread" begin
+    using Targets: TaskExecutor, capacity
+    @test capacity(TaskExecutor(:auto)) == Threads.nthreads(:default)
+    @test capacity(TaskExecutor(3)) == 3
+    @test_throws "jobs must be a positive integer" TaskExecutor(:many)
+end
+
 @testitem "the package never reasons about thread ids" begin
     banned = ["thread" * "id(", "@" * "threads"]
     dir = joinpath(pkgdir(Targets), "src")
