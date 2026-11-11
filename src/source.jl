@@ -190,16 +190,33 @@ example two lambdas with the same arguments on one line): hashing all of them is
 conservative, so editing any of them rebuilds, but nothing stale is kept.
 Methods that a macro or `struct` generates (`@kwdef` constructors and their
 keyword bodies, default constructors) have no definition of their own; their
-source is the macro call or `struct` that generates them (`generating_form`).
+source is the macro call or `struct` that generates them (`generating_form`),
+provided it names them (`generates`).
 """
 # Where a method is defined. Revise (through CodeTracking) keeps named methods'
 # lines current after edits, but it cannot map anonymous functions and closures
 # (gensym'd names starting with `#`) and warns about each one, so those use the
-# location Julia recorded.
+# location Julia recorded. A named function defined inside a `let` block or a
+# function is a closure with a plain method name: Revise may know its current
+# location, so it is asked, but quietly, falling back to the recorded location.
 function method_location(m::Method)
-    startswith(string(m.name), '#') || return CodeTracking.whereis(m)
+    startswith(string(m.name), '#') && return recorded_location(m)
+    is_generated_function_type(method_function_type(m)) || return CodeTracking.whereis(m)
+    found = Logging.with_logger(() -> CodeTracking.whereis(m), Logging.NullLogger())
+    return something(found, recorded_location(m))
+end
+
+"The file and line Julia recorded for `m`, or `nothing` without a file."
+function recorded_location(m::Method)
     file = Base.fixup_stdlib_path(string(m.file))
     return isabspath(file) ? (file, Int(m.line)) : nothing
+end
+
+"The type of the function `m` is a method of, from its signature, or `nothing`."
+function method_function_type(m::Method)
+    sig = Base.unwrap_unionall(m.sig)
+    sig isa DataType && !isempty(sig.parameters) || return nothing
+    return Base.unwrap_unionall(sig.parameters[1])
 end
 
 function method_source(m::Method)
@@ -225,9 +242,43 @@ function method_source(m::Method)
             (kind == :named && detail === name)
     end
     isempty(matching) || return Expr[e for (_, e, _) in matching]
+    # Anonymous methods have no name to check the form against: lowered code.
+    name === nothing && return nothing
     generated = generating_form(parsed_file(file), line)
-    return generated === nothing ? nothing : Expr[Expr(generated)]
+    generated === nothing && return nothing
+    expr = Expr(generated)
+    return generates(expr, name) ? Expr[expr] : nothing
 end
+
+"""
+    generates(form::Expr, name::Symbol)
+
+Whether a `generating_form` can generate the methods of `name`: a `struct`
+called `name` (its constructors), a macro call wrapping one (`@kwdef`), or any
+other macro call that mentions `name` (`@eval`). This keeps a stale line from
+hashing an unrelated form that now occupies it; the method then falls back to
+lowered code.
+"""
+function generates(form::Expr, name::Symbol)
+    form.head == :struct && return struct_name(form) === name
+    form.head == :macrocall || return false
+    i = findfirst(a -> a isa Expr && a.head == :struct, form.args)
+    return i === nothing ? mentions(form, name) : struct_name(form.args[i]) === name
+end
+
+"The name of the type a `struct` expression defines."
+function struct_name(form::Expr)
+    sig = form.args[2]
+    while sig isa Expr && sig.head in (:<:, :curly)
+        sig = sig.args[1]
+    end
+    return sig
+end
+
+mentions(x::Symbol, name::Symbol) = x === name
+mentions(x::QuoteNode, name::Symbol) = mentions(x.value, name)
+mentions(x::Expr, name::Symbol) = any(a -> mentions(a, name), x.args)
+mentions(_, ::Symbol) = false
 
 """
     lowered_source(m::Method)
@@ -357,6 +408,50 @@ end
     @test all(src -> only(src).args[end].head == :struct, kwdef)
     @test all(meth -> only(method_source(meth)).head == :struct, methods(m.P))
     @test only(method_source(only(methods(getfield(m, Symbol("@twice")))))).head == :macro
+end
+
+@testitem "the generated-method fallback only accepts forms that generate the method" begin
+    using Targets: generates
+    @test generates(:(struct P{T} <: Number
+        x::T
+    end), :P)
+    @test !generates(:(struct P
+        x
+    end), :Q)
+    kwdef = :(Base.@kwdef struct K
+        a::Int = 1
+    end)
+    @test generates(kwdef, :K)
+    @test !generates(kwdef, :a) # a field of the struct, not the type
+    @test generates(:(@eval f(x) = 1), :f)
+    @test !generates(:(@eval g(x) = 1), :f)
+end
+
+@testitem "closures with plain names ask CodeTracking quietly" setup = [SourceFixtures] begin
+    using Targets: method_location, method_source
+    CodeTracking = Targets.CodeTracking
+    m, path = load_source(
+        """
+    const cached = let store = Dict{Int, Int}()
+        function lookup(x)
+            get!(store, x, 2x)
+        end
+    end
+    """,
+    )
+    meth = only(methods(m.cached))
+    @test meth.name == :lookup # a closure whose method has a plain name
+    # Revise warns when it cannot map a closure; simulate it.
+    previous = CodeTracking.method_lookup_callback[]
+    CodeTracking.method_lookup_callback[] = _ -> @warn "signature was not found"
+    try
+        @test_logs method_location(meth)
+        file, line = method_location(meth)
+        @test basename(file) == basename(path) && line == 2
+    finally
+        CodeTracking.method_lookup_callback[] = previous
+    end
+    @test only(method_source(meth)).head == :function
 end
 
 @testitem "method_source is nothing without a readable file" begin
