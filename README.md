@@ -45,6 +45,51 @@ tar_list()                    # target names by section, in build order
 tar_dot()                     # Graphviz text of the pipeline, coloured by status
 ```
 
+Each `@target`'s dependencies are the targets its expression refers to. Names the
+expression binds itself (comprehension variables, lambda arguments, `let` and `do`
+bindings) are not dependencies, and a name that is neither a target nor defined where the
+pipeline is written is an error that names its line. A target's own name means what it
+means outside the pipeline, so `@target summary = summary(fits)` calls `summary`.
+
+### Fragments, static branching and replication
+
+`@targets` declares part of a pipeline, so each analysis can live in its own file: names
+are resolved when `tar_pipeline` (or `@pipeline`) puts the fragments together. Inside a
+block, `@map` declares targets once per value, as `tar_map` does, and `@rep` replicates an
+expression, as `tar_rep` does:
+
+```julia
+# One MCMC fit of `data`, as a fragment a function returns
+mcmc_fit(; chains) = @targets begin
+    @target tuning = tune(data, priors)
+    @map(1:chains) do k
+        @target chain = run_chain(data, priors, tuning, k)   # chain_1, chain_2, ...
+    end
+    @target fit = combine(collect(chain))                     # this fit's chains, in order
+end
+
+models = @targets begin
+    @target priors = default_priors()
+    @map((seir = SEIR(), staged = Staged())) do model
+        @map((real = :real, synthetic = :synthetic); prefix = true) do source
+            @target data = load_data(model, source)          # real_data_seir, ...
+            mcmc_fit(; chains = 4)                           # real_fit_seir, ...
+        end
+    end
+    @target comparison = compare(fit)          # fit.seir.real, fit.staged.synthetic, ...
+    @rep null = simulate_null(priors)  batches = 10  reps = 100
+end
+
+tar_pipeline(models; seed = 2026)
+```
+
+Within a branch a name means that branch's target: `data` in the fragment is
+`real_data_seir` in the `real`, `seir` branch. Outside a `@map`, a template's name means
+all of its targets, as a `NamedTuple` keyed by suffix (nested for nested maps). A block may
+also assign variables its targets share (`directory = "output"`) and splice in fragments
+or `target()`s. Names, suffixes, groups and order follow `tar_map` (below), so
+`tar_make(names = [:real_fit])` builds both models' real-data fits.
+
 Without macros, the same pipeline is built from plain functions. A target's
 dependencies are the argument names of its function:
 
@@ -134,7 +179,7 @@ packages that moved, and `track_manifest = true` rebuilds everything.
   adding, removing or reordering elements rebuilds only the new ones, and a change to
   one element rebuilds one branch (and, through `pattern = :branching_target`, one
   chain of branches). Downstream targets receive the vector of branch values.
-- **Quarto reports** (`tar_quarto`, or `@quarto` in `@pipeline`): see below.
+- **Quarto reports** (`tar_quarto`, or `@quarto` in `@pipeline` and `@targets`): see below.
 
 ## Quarto reports
 

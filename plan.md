@@ -67,10 +67,11 @@ Keep the package as a handful of small, separately testable files, each owning o
 | `src/graph.jl` | Layered layout and `tar_dot()` |
 | `src/list.jl` | `tar_list()`: target names by section and connected component |
 | `src/testing.jl` | `@testmodule` fixtures shared by scenario tests (throwaway projects) |
-| `src/macros.jl` | `@pipeline` / `@target` sugar (last phase) |
+| `src/declarations.jl` | Declarations and fragments, assembled into targets by `tar_pipeline` |
+| `src/macros.jl` | `@pipeline` / `@targets` / `@target` / `@map` / `@rep` sugar (last phase) |
 | `ext/TargetsMakieExt.jl` | `tar_visnetwork()` drawing with plain Makie primitives, loaded when any Makie backend is |
 
-**Dependencies.** Hard: JLD2.jl, Graphs.jl, CodeTracking.jl, JuliaSyntax.jl, TestItems.jl (its `@testitem` macro expands to nothing outside the test runner), and the stdlibs SHA, TOML, Dates, Serialization. Weak, through one package extension: Makie.jl (any backend the user loads, e.g. CairoMakie). GraphMakie was tried as well (first as a requirement, then as a second `engine`) and dropped: the layout, colours, labels and edges are computed here as `NetworkData`, so plain Makie scatter, arrows and text draw the same picture, and a second engine only cost a dependency, an extension and slow tests. Arrow ends are shortened by a fixed number of *pixels* (converted through the axis limits and figure size), not data units. Recommend Revise.jl to users, since CodeTracking finds REPL-defined methods only when Revise is loaded. `tar_meta()` and `tar_manifest()` return a `Vector` of `NamedTuple`s, which is Tables.jl-compatible, so DataFrames is not a dependency.
+**Dependencies.** Hard: JLD2.jl, Graphs.jl, CodeTracking.jl, JuliaSyntax.jl, ExpressionExplorer.jl (free names of `@target` expressions, added with the macro extension of Phase 9), TestItems.jl (its `@testitem` macro expands to nothing outside the test runner), and the stdlibs SHA, TOML, Dates, Serialization. Weak, through one package extension: Makie.jl (any backend the user loads, e.g. CairoMakie). GraphMakie was tried as well (first as a requirement, then as a second `engine`) and dropped: the layout, colours, labels and edges are computed here as `NetworkData`, so plain Makie scatter, arrows and text draw the same picture, and a second engine only cost a dependency, an extension and slow tests. Arrow ends are shortened by a fixed number of *pixels* (converted through the axis limits and figure size), not data units. Recommend Revise.jl to users, since CodeTracking finds REPL-defined methods only when Revise is loaded. `tar_meta()` and `tar_manifest()` return a `Vector` of `NamedTuple`s, which is Tables.jl-compatible, so DataFrames is not a dependency.
 
 **Decision: package extensions for visualization.** Makie is heavy to load. Putting plotting in `ext/` keeps `using Targets` fast and means headless servers never pay for it. A Graphviz DOT export (`tar_dot()`) lives in the core, since it is plain string output.
 
@@ -453,6 +454,13 @@ expands to `tar_pipeline(target(:raw_file, () -> "data/raw.csv"; format = :file)
 **Edge case to document:** a local variable that shadows a target name (a comprehension variable named `grid`) is treated as a dependency. This is harmless (one extra edge) and rare.
 
 Done when: a macro pipeline and the equivalent `target()` pipeline produce the same graph and order; errors point to the right lines; editing one `@target` line rebuilds only that target and its descendants.
+
+*Status (extended after v0.1.0): everything the function form expresses has a macro form, and three decisions above are superseded.*
+
+- *`@target` is valid inside `@targets` blocks, which build a `Fragment` of declarations (`src/declarations.jl`); `@pipeline` is `tar_pipeline` of one. Names are resolved when `tar_pipeline` assembles the fragments, not by the macro, so fragments in different files (or returned by functions) refer to each other's targets.*
+- *Free names come from ExpressionExplorer.jl (Pluto's scope analysis), run on the expression after expanding its macros in the caller's module and removing the `GlobalRef`s they generate. Locally bound names are never dependencies, which retires the shadowing edge case; every other free name is a target or else the value it has where the block was written (`@isdefined` in a closure, so function locals work too), and a name that is neither is an error naming the line. The generated function is a `MacroCommand` whose body takes all those names as arguments; its command hash covers what the body and scope closures capture, and code discovery follows the values taken from the scope.*
+- *Static branching is `@map(values; names, prefix) do v ... end` (Julia requires the parentheses for `do`), nestable, with `tar_map`'s suffixes, order and groups; `prefix = true` puts the suffix first, so nested maps reproduce names such as `real_chain_1_seir`. Names resolve to the innermost declaration, and a template's name outside its map is a group, passed as a `NamedTuple` keyed by suffix. `@rep` covers `tar_rep` and, inside `@map`, `tar_map_rep`.*
+- *A target's own name in its expression is not a dependency (`@target summary = summary(fit)`), and calling a function that shares a target's name is an error, since the name means the target.*
 
 ## Testing strategy
 
