@@ -104,7 +104,8 @@ end
 
 "The [`tar_outdated`](@ref) reason of each outdated target among `nodes`."
 outdated_reasons(p::Pipeline, nodes; store, root) = Dict(
-    r.name => r.reason for r in tar_outdated(p; names = nodes, store, root)
+    r.name => r.reason
+    for r in tar_outdated(p; names = nodes, store, root)
 )
 
 "The status of target `n` given the outdated `reasons` and the `running` targets."
