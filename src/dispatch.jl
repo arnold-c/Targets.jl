@@ -44,7 +44,9 @@ end
     run_jobs!(ctx, queue, executor; keep_going)
 
 Plan, execute and commit every target in `queue`, running up to `jobs` slots'
-worth of jobs at once (the executor's capacity). Ready jobs start strictly in queue order: when the next
+worth of jobs at once (the executor's capacity). Ready targets that need no job
+(up to date, or blocked by a failed upstream) are settled first, wherever they
+are in the queue. Ready jobs start strictly in queue order: when the next
 one does not fit, the scheduler waits rather than letting smaller jobs overtake
 it. With `jobs = 1`, and for `deployment = :main` targets, jobs run in this
 task. After a failure without `keep_going`, nothing new starts, running jobs
@@ -63,6 +65,7 @@ function run_jobs!(
         while true
             # start as much as fits before waiting for a result
             while failure[] === nothing
+                settle_ready!(ctx, queue)
                 plan_ready!(ctx, queue, state.pending)
                 dispatch!(ctx, queue, state, failure; jobs, keep_going) || break
             end
@@ -83,6 +86,36 @@ function run_jobs!(
     end
     failure[] === nothing || throw(failure[])
     return nothing
+end
+
+"""
+Settle the ready targets that need no job, and those that become ready as a
+result: they never wait for a slot, so a build reports every up-to-date target
+before its first job, and a target whose upstream was rebuilt to the same value
+is settled as soon as that upstream finishes.
+"""
+function settle_ready!(ctx::BuildContext, queue::ReadyQueue)
+    settled = true
+    while settled
+        settled = false
+        for name in copy(queue.ready)
+            t = get_target(ctx.pipeline, name)
+            needs_job(ctx, t) && continue
+            remove_ready!(queue, name)
+            plan!(ctx, t) # records it as up to date or blocked
+            finish_target!(ctx, queue, name)
+            settled = true
+        end
+    end
+    return nothing
+end
+
+# Branching targets are planned as usual: whether a branch needs a job is
+# decided branch by branch.
+function needs_job(ctx::BuildContext, t::Target)
+    t.pattern === nothing || return true
+    isempty(upstream_failures(ctx, t)) || return false
+    return decision_for!(ctx, t).reason !== nothing
 end
 
 # Plan ready targets until some job is waiting to start (or nothing is ready).
@@ -329,6 +362,32 @@ end
         s = build(p, dir; jobs = 2)
         @test length(s.branches[:met]) == 2
         @test all(tar_read(:met; store = joinpath(dir, "_targets")))
+    end
+end
+
+@testitem "up-to-date targets are reported before the first job starts" begin
+    # `slow` is rebuilt; `b` and `c` are up to date but declared after it, so a
+    # queue taken strictly in order would build `slow` first.
+    pipeline(v) = tar_pipeline(
+        target(:a, () -> 1),
+        target(:slow, () -> v),
+        target(:b, a -> a + 1),
+        target(:c, b -> b + 1),
+        target(:d, slow -> slow),
+    )
+    for jobs in (1, 2)
+        mktempdir() do dir
+            store = joinpath(dir, "_targets")
+            tar_make(pipeline(1); store, root = dir, io = devnull, jobs)
+            io = IOBuffer()
+            s = tar_make(pipeline(2); store, root = dir, io, jobs, progress = :lines)
+            lines = split(String(take!(io)), '\n')
+            first_job = findfirst(l -> occursin(r"[▶✔] slow", l), lines)
+            up_to_date(n) = findfirst(l -> occursin("· $n up to date", l), lines)
+            @test all(n -> up_to_date(n) < first_job, (:a, :b, :c))
+            @test s.built == [:slow, :d]
+            @test s.skipped == [:a, :b, :c]
+        end
     end
 end
 

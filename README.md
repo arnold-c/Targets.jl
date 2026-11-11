@@ -241,8 +241,12 @@ logs one line per finished target to the terminal and to `_targets/log/progress.
 `✔ target 1.2s (reason)` in green, `✖ target: error` in red. In a terminal, the targets
 still running stay pinned below the log, each with a spinner and its time so far, above
 a count of the targets done, running and queued (`progress = :lines` prints a
-`▶ target (reason)` line at each start instead). Values are held in memory only while a
-later target in the run still needs them.
+`▶ target (reason)` line at each start instead). Targets that need no build never wait
+for a job slot: every up-to-date target in the selection is reported (`· target up to
+date`) before the first job starts, and a target whose upstream was rebuilt to the same
+value is settled as soon as that upstream finishes. `tar_outdated(names = [...])` shows
+what a build would do without building. Values are held in memory only while a later
+target in the run still needs them.
 
 If you edit a source file without Revise and without restarting, the session still
 runs the old code while the files on disk have changed, so `tar_make` stops with an

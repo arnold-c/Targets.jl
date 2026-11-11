@@ -45,6 +45,10 @@ ready_order(q::ReadyQueue, name::Symbol) = (-get(q.priority, name, 0.0), q.index
 has_ready(q::ReadyQueue) = !isempty(q.ready)
 peek_ready(q::ReadyQueue) = first(q.ready)
 pop_ready!(q::ReadyQueue) = popfirst!(q.ready)
+remove_ready!(q::ReadyQueue, name::Symbol) = deleteat!(
+    q.ready,
+    findfirst(==(name), q.ready),
+)
 
 "Mark `name` finished and queue the dependents that no longer wait for anything."
 function finish!(q::ReadyQueue, name::Symbol)

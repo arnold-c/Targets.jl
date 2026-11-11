@@ -41,6 +41,16 @@ function Base.show(io::IO, s::BuildSummary)
     )
 end
 
+"""
+Whether a target that does not branch must be built (`reason`, `nothing` when
+it is up to date), with the upstream value hashes and the seed it is judged by.
+"""
+struct Decision
+    reason::Union{Nothing, Symbol}
+    dep_hashes::Dict{Symbol, String}
+    seed::Union{Nothing, UInt64}
+end
+
 "State for one `tar_make` run."
 struct BuildContext
     pipeline::Pipeline
@@ -55,9 +65,10 @@ struct BuildContext
     value_hashes::Dict{Symbol, String}
     remaining::Dict{Symbol, Int}
     branching::Dict{Symbol, BranchProgress}
+    decisions::Dict{Symbol, Decision} # made once a target's dependencies finish
     nulled::Set{Symbol} # failed `error = :null` targets: consumers get `nothing`
     warned::Set{String} # keys of jobs that logged warnings
-    run_id::String      # identifies this run's progress events
+    run_id::String # identifies this run's progress events
     summary::BuildSummary
     observe::Function
 end
@@ -107,6 +118,7 @@ function BuildContext(
         Dict{Symbol, String}(),
         consumer_counts(p, selected),
         Dict{Symbol, BranchProgress}(),
+        Dict{Symbol, Decision}(),
         Set{Symbol}(),
         Set{String}(),
         new_run_id(),
@@ -237,6 +249,12 @@ depend on are considered. With `force = true`, all of those are rebuilt whatever
 their status. An error stops the run and is rethrown, unless `keep_going` is
 set, in which case independent targets are still built and the failure is
 reported in the summary.
+
+Targets that need no build never wait for a job: every target that is up to
+date is reported before the first job starts, and a target whose upstream was
+rebuilt to the same value is settled as soon as that upstream finishes. To see
+what a build would do without building, call [`tar_outdated`](@ref) with the
+same `names`.
 
 `root` is the project directory whose code counts as user code (default: the
 active project); `p.track` adds more. When the Manifest changes, a warning
@@ -483,7 +501,7 @@ function plan!(ctx::BuildContext, t::Target)
     cmd = command_for!(ctx, t)
     code = code_for!(ctx, t)
     t.pattern === nothing || return plan_branching!(ctx, t, cmd, code)
-    decision = decide(ctx, t)
+    decision = decision_for!(ctx, t)
     if decision.reason === nothing
         ctx.value_hashes[t.name] = stored_value_hash(ctx.store, t.name)
         push!(sm.skipped, t.name)
@@ -515,15 +533,11 @@ upstream_failures(ctx::BuildContext, t::Target) = filter(
     t.deps,
 )
 
-"""
-Whether a target that does not branch must be built (`reason`, `nothing` when
-it is up to date), with the upstream value hashes and the seed it is judged by.
-"""
-struct Decision
-    reason::Union{Nothing, Symbol}
-    dep_hashes::Dict{Symbol, String}
-    seed::Union{Nothing, UInt64}
-end
+decision_for!(ctx::BuildContext, t::Target) = get!(
+    () -> decide(ctx, t),
+    ctx.decisions,
+    t.name,
+)
 
 "Decide whether target `t` must be built; all its dependencies have finished."
 function decide(ctx::BuildContext, t::Target)
