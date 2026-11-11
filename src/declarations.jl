@@ -202,9 +202,10 @@ struct Group
     parts::Vector{Any}
 end
 
-template_name(d::PlainDeclaration) = d.target.name
-template_name(d::TargetDeclaration) = d.name
-template_name(::MapDeclaration) = nothing
+"The names a declaration's targets have before the suffixes of enclosing maps."
+template_names(d::PlainDeclaration) = [d.target.name]
+template_names(d::TargetDeclaration) = [d.name]
+template_names(::MapDeclaration) = Symbol[]
 
 "The name a target declared as `name` gets at a level with `path`."
 final_name(name::Symbol, path) = foldr(
@@ -214,9 +215,8 @@ final_name(name::Symbol, path) = foldr(
 )
 
 function all_names!(names, level::Level)
-    for d in level.declarations
-        n = template_name(d)
-        n === nothing || push!(names, final_name(n, level.path))
+    for d in level.declarations, n in template_names(d)
+        push!(names, final_name(n, level.path))
     end
     foreach(bs -> foreach(b -> all_names!(names, b), bs), level.branches)
     return names
@@ -240,11 +240,18 @@ function level_targets(level::Level, asm::Assembly)
         if d isa MapDeclaration
             append!(out, map_targets(d, popfirst!(maps), asm))
         else
-            push!(out, template_name(d) => assemble(d, level, asm))
+            append!(out, declared_targets(d, level, asm))
         end
     end
     return out
 end
+
+"The targets `d` declares at `level`, each with its template name."
+declared_targets(
+    d::Union{PlainDeclaration, TargetDeclaration},
+    level::Level,
+    asm::Assembly,
+) = [only(template_names(d)) => assemble(d, level, asm)]
 
 # As `tar_map`: grouped by template (in order of first appearance), each
 # target's `group` is its name before this map's suffix.
@@ -286,7 +293,7 @@ function find_local_target(level::Level, name::Symbol)
     found = Any[
         final_name(name, level.path)
         for d in level.declarations
-        if template_name(d) == name
+        if name in template_names(d)
     ]
     for (m, bs) in zip(
             filter(d -> d isa MapDeclaration, level.declarations),
@@ -332,6 +339,23 @@ function assemble(d::PlainDeclaration, level::Level, asm::Assembly)
 end
 
 function assemble(d::TargetDeclaration, level::Level, asm::Assembly)
+    command, deps = resolve_command(d, level, asm)
+    pattern = map_names(n -> pattern_target(d, level, n, asm), d.pattern)
+    return target(
+        final_name(d.name, level.path),
+        command;
+        deps,
+        pattern,
+        source = d.source,
+        d.options...,
+    )
+end
+
+"""
+The command of declaration `d` with its references resolved at `level`, and
+the dependencies they name.
+"""
+function resolve_command(d, level::Level, asm::Assembly)
     c = d.command
     scope = scope_values(c)
     deps = Symbol[]
@@ -347,15 +371,7 @@ function assemble(d::TargetDeclaration, level::Level, asm::Assembly)
             push!(inputs, add_dependency!(deps, found))
         end
     end
-    pattern = map_names(n -> pattern_target(d, level, n, asm), d.pattern)
-    return target(
-        final_name(d.name, level.path),
-        MacroCommand(c, inputs);
-        deps,
-        pattern,
-        source = d.source,
-        d.options...,
-    )
+    return MacroCommand(c, inputs), deps
 end
 
 function add_dependency!(deps::Vector{Symbol}, name::Symbol)
@@ -369,7 +385,7 @@ add_dependency!(deps::Vector{Symbol}, g::Group) = GroupInput(
     Any[add_dependency!(deps, p) for p in g.parts]
 )
 
-function pattern_target(d::TargetDeclaration, level::Level, name::Symbol, asm::Assembly)
+function pattern_target(d, level::Level, name::Symbol, asm::Assembly)
     found = resolve(level, name, asm)
     found isa Symbol && return found
     throw(PipelineError(
@@ -380,13 +396,13 @@ end
 
 location(line::LineNumberNode) = "$(something(line.file, :none)):$(line.line)"
 
-undefined_name(d::TargetDeclaration, name::Symbol, asm::Assembly) = PipelineError(
+undefined_name(d, name::Symbol, asm::Assembly) = PipelineError(
     "$(location(d.line)): target `$(d.name)` uses `$name`, which is neither a target " *
         "nor defined where the target is declared" *
         hint_suffix(name, asm.names),
 )
 
-called_target(d::TargetDeclaration, name::Symbol) = PipelineError(
+called_target(d, name::Symbol) = PipelineError(
     "$(location(d.line)): target `$(d.name)` calls `$name`, which is both a target and a " *
         "function; rename the target, or qualify the function (`SomeModule.$name`)",
 )

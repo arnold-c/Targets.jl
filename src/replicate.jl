@@ -49,20 +49,25 @@ function rep_targets(
     reps,
     kwargs...,
 )
-    (batches >= 1 && reps >= 1) ||
-        throw(ArgumentError("tar_rep: batches and reps must be positive"))
+    reps >= 1 || throw(ArgumentError("tar_rep: batches and reps must be positive"))
+    n = Int(reps)
+    return batch_targets(
+        name,
+        (b, args...) -> run_reps(f, n, (leading..., args...)),
+        dependencies;
+        batches,
+        kwargs...,
+    )
+end
+
+# `run(batch, values...)` runs one batch, given the values of `dependencies`.
+function batch_targets(name::Symbol, run, dependencies; batches, kwargs...)
+    batches >= 1 || throw(ArgumentError("tar_rep: batches and reps must be positive"))
     batch = Symbol(name, :_batch)
     runs = Symbol(name, :_batches)
-    n = Int(reps)
     return [
         target(batch, () -> collect(1:Int(batches))),
-        target(
-            runs,
-            (b, args...) -> run_reps(f, n, (leading..., args...));
-            deps = [batch; dependencies],
-            pattern = batch,
-            kwargs...,
-        ),
+        target(runs, run; deps = [batch; dependencies], pattern = batch, kwargs...),
         target(name, xs -> reduce(vcat, xs; init = Any[]); deps = [runs]),
     ]
 end
