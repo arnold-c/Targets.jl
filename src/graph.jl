@@ -97,15 +97,22 @@ from the current code and store (nothing is stored), or `:running` while a
 build in progress (by its events) is running it.
 """
 function node_statuses(p::Pipeline, nodes; store, root)
-    reasons = Dict(r.name => r.reason for r in tar_outdated(p; names = nodes, store, root))
+    reasons = outdated_reasons(p, nodes; store, root)
     running = running_targets(as_store(store))
-    status(reason) = reason === nothing ?
-        :uptodate :
-        reason == :missing ? :unbuilt : reason == :errored ? :errored : :outdated
-    return Dict(
-        n => n in running ? :running : status(get(reasons, n, nothing))
-        for n in nodes
-    )
+    return Dict(n => node_status(n, reasons, running) for n in nodes)
+end
+
+"The [`tar_outdated`](@ref) reason of each outdated target among `nodes`."
+outdated_reasons(p::Pipeline, nodes; store, root) = Dict(
+    r.name => r.reason for r in tar_outdated(p; names = nodes, store, root)
+)
+
+"The status of target `n` given the outdated `reasons` and the `running` targets."
+function node_status(n::Symbol, reasons::AbstractDict, running)
+    n in running && return :running
+    reason = get(reasons, n, nothing)
+    reason === nothing && return :uptodate
+    return reason === :missing ? :unbuilt : reason === :errored ? :errored : :outdated
 end
 
 const STATUS_COLORS = Dict(

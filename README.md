@@ -236,9 +236,12 @@ parameters are not supported.
   (use it for final and CI runs).
 
 It returns a `BuildSummary` listing what was built, skipped, errored or blocked, and
-logs `▶ target (reason)` / `✔ target 1.2s` lines to the terminal and to
-`_targets/log/progress.log`. Values are held in memory only while a later target in
-the run still needs them.
+logs one line per finished target to the terminal and to `_targets/log/progress.log`:
+`✔ target 1.2s (reason)` in green, `✖ target: error` in red. In a terminal, the targets
+still running stay pinned below the log, each with a spinner and its time so far, above
+a count of the targets done, running and queued (`progress = :lines` prints a
+`▶ target (reason)` line at each start instead). Values are held in memory only while a
+later target in the run still needs them.
 
 If you edit a source file without Revise and without restarting, the session still
 runs the old code while the files on disk have changed, so `tar_make` stops with an

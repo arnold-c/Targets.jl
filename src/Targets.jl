@@ -27,6 +27,7 @@ using Random: Random
 using ScopedValues: ScopedValue, with
 using SHA: SHA
 using Serialization: Serialization
+using StyledStrings: @styled_str
 using TOML: TOML
 using TestItems: @testitem, @testmodule
 

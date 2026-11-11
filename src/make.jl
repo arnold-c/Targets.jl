@@ -229,7 +229,7 @@ end
     tar_make(p::Pipeline; names = nothing, force = false, store = default_store_path(),
              root = nothing, keep_going = false, track_manifest = false,
              check_stale = true, jobs = 1, executor = nothing, check_mutation = false,
-             io = stdout)
+             io = stdout, progress = :auto)
 
 Build the targets of `p` that are outdated, in dependency order, and return a
 [`BuildSummary`](@ref). With `names`, only those targets and everything they
@@ -261,6 +261,15 @@ interrupt, running jobs are waited for (interrupt again to abandon them).
 `check_mutation = true` hashes every argument before and after each call and
 errors, naming the target and argument, if a target modified its input. It is
 costly, so it is off by default; turn it on in tests and CI.
+
+Progress is logged to `io` and to `_targets/log/progress.log`, one line per
+finished target or branch: `✔ name 1.2s (reason)` in green, `✖ name: error`
+in red. With `progress = :live` (the default `:auto` picks it when `io` is a
+terminal), the jobs still running stay in a footer below the log, each with a
+spinner and its time so far, above a count of the targets done, running and
+queued; console log messages from targets are printed above the footer, but
+what targets print straight to `stdout` can disturb it until the next redraw.
+With `progress = :lines`, a `▶ name (reason)` line also marks each start.
 """
 tar_make(p::Pipeline; kwargs...) = Base.invokelatest(build_pipeline, p; kwargs...)
 
@@ -282,6 +291,7 @@ function build_pipeline(
     executor::Union{Nothing, Executor} = nothing,
     check_mutation::Bool = false,
     io::IO = stdout,
+    progress::Symbol = :auto,
     observe::Function = ctx -> nothing,
 )
     exec = something(executor, TaskExecutor(jobs))
@@ -296,7 +306,7 @@ function build_pipeline(
         s,
         rootdir,
         Symbol[],
-        PlainDisplay(io),
+        open_display(progress, io, length(selected)),
         Discovery(user_roots(rootdir, p.track)),
         selected,
         observe,
@@ -317,7 +327,7 @@ function build_pipeline(
             cd(rootdir) do
                 start!(exec, ctx)
                 try
-                    run_jobs!(ctx, queue, exec; keep_going)
+                    showing(() -> run_jobs!(ctx, queue, exec; keep_going), ctx.display)
                 finally
                     stop!(exec)
                 end
@@ -415,7 +425,9 @@ function tar_make_fresh(
     jobs::Union{Integer, Symbol} = 1,
     check_mutation::Bool = false,
     io::IO = stdout,
+    progress::Symbol = :auto,
 )
+    check_progress(progress)
     summary_path = tempname()
     store_path = store isa Store ? store.root : String(store)
     program = """
@@ -431,6 +443,7 @@ function tar_make_fresh(
         check_stale = $(repr(check_stale)),
         jobs = $(repr(jobs)),
         check_mutation = $(repr(check_mutation)),
+    progress = $(repr(progress)),
     )
     Targets.write_summary($(repr(summary_path)), summary)
     """
@@ -438,6 +451,7 @@ function tar_make_fresh(
     threads = Threads.nthreads(:default)
     cmd = `$(Base.julia_cmd()) --startup-file=no --threads=$threads --project=$project -e $program`
     try
+        # the child writes to `io` itself, so with `progress = :auto` it sees a terminal too
         run(pipeline(cmd; stdout = io, stderr = io))
     catch e
         e isa InterruptException && rethrow()
@@ -539,7 +553,7 @@ function commit!(ctx::BuildContext, r::JobResult; keep_going::Bool)
         record_failure!(ctx, t, r.exception; backtrace = r.backtrace)
         push!(ctx.summary.errored, t.name)
         event!(ctx, t.name, :errored; r.seconds)
-        log!(ctx, "✖ $(t.name): $(first(sprint(showerror, r.exception), 200))")
+        log!(ctx, done_line(r))
         t.error === :null && null_value!(ctx, t)
         stops_build(t, keep_going) && throw(r.exception)
         return true
@@ -550,7 +564,7 @@ function commit!(ctx::BuildContext, r::JobResult; keep_going::Bool)
     ctx.value_hashes[t.name] = r.value_hash
     push!(ctx.summary.built, t.name)
     event!(ctx, t.name, :built; r.seconds)
-    log!(ctx, "✔ $(t.name) $(round(r.seconds; digits = 2))s")
+    log!(ctx, done_line(r))
     return true
 end
 
@@ -760,6 +774,7 @@ end
         build_source("p = tar_pipeline(target(:a, () -> 1))", dir)
         log = read(joinpath(dir, "_targets", "log", "progress.log"), String)
         @test occursin("▶ a (missing)", log)
+        @test occursin(r"✔ a [0-9.]+s \(missing\)", log)
         @test occursin("summary: 1 built", log)
     end
 end

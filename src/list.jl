@@ -105,7 +105,10 @@ function Base.show(io::IO, l::TargetList)
     )
 end
 
-function Base.show(io::IO, ::MIME"text/plain", l::TargetList)
+Base.show(io::IO, ::MIME"text/plain", l::TargetList) = print_list(io, l, print)
+
+"Print `l` by component and section, each target with `entry(io, name)`."
+function print_list(io::IO, l::TargetList, entry)
     isempty(l.components) && return print(io, "No targets")
     several = length(l.components) > 1
     for (i, c) in enumerate(l.components)
@@ -118,17 +121,18 @@ function Base.show(io::IO, ::MIME"text/plain", l::TargetList)
                 ")\n";
                 bold = true,
             )
-        print_component(io, c, several ? "  " : "")
+        print_component(io, c, several ? "  " : "", entry)
     end
 end
 
-function print_component(io::IO, c::ListComponent, indent::AbstractString)
+function print_component(io::IO, c::ListComponent, indent::AbstractString, entry)
     shown = filter(s -> !isempty(c[s]), collect(keys(LIST_SECTIONS)))
     for (j, s) in enumerate(shown)
         print(io, indent)
         printstyled(io, LIST_SECTIONS[s], " (", length(c[s]), ")"; bold = true)
         for n in c[s]
-            print(io, "\n", indent, "  ", n)
+            print(io, "\n", indent, "  ")
+            entry(io, n)
         end
         j < length(shown) && println(io)
     end
