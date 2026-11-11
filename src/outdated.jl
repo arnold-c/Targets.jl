@@ -10,8 +10,9 @@ the recorded form of the seed it would run with ([`seed_string`](@ref)).
 
 `now` is the clock for `cue_age` (a parameter so tests can set it).
 
-Reasons, in order: `:forced`, `:always`, `:condition`, `:no_source`, `:missing`,
-`:errored`, `:expired`,
+Reasons, in order: `:forced`, `:always`, `:condition`, `:no_source`, `:errored`
+(the last build failed, whether or not an earlier value is stored), `:missing`,
+`:expired`,
 `:julia_version_changed`, `:command_changed`, `:seed_changed`, `:format_changed`,
 `:code_changed`, `:deps_changed`,
 `:upstream_changed`, `:file_changed`, `:url_changed`. File targets are re-checked on every call
@@ -52,8 +53,8 @@ function outdated_reason(
         stored = something(record).julia_version == string(VERSION)
     end
     t.cue == :never && stored && return nothing
+    record === nothing || isempty(record.error) || return :errored
     (record === nothing || !stored) && return :missing
-    isempty(record.error) || return :errored
     expired(t.cue, record.built_at, now) && return :expired
     record.hash_source == "lowered" &&
         record.julia_version != string(VERSION) &&
@@ -144,7 +145,8 @@ end
         Record,
         CommandHash,
         command_hash,
-        update
+        update,
+        delete_object
     mktempdir() do dir
         s = open_store(joinpath(dir, "_targets"))
         t = target(:m, clean -> clean)
@@ -167,6 +169,9 @@ end
 
         write_meta(s, :m, update(good; error = "boom"))
         @test reason() == :errored
+        delete_object(s, :m) # failed without ever storing a value
+        @test reason() == :errored
+        write_object(s, :m, 1)
         write_meta(s, :m, update(good; command_hash = "other"))
         @test reason() == :command_changed
         write_meta(s, :m, update(good; seed = "1"))

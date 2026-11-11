@@ -110,6 +110,9 @@ export tar_dot, tar_visnetwork
 include("list.jl")
 export tar_list, TargetList
 
+include("status.jl")
+export tar_status, TargetStatus
+
 include("api.jl")
 
 include("macros.jl")

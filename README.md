@@ -42,6 +42,7 @@ tar_read(:summary)            # the stored value
 @tar_load clean_data fits     # clean_data = tar_read(:clean_data), ...
 tar_outdated()                # what would rebuild, and why
 tar_list()                    # target names by section, in build order
+tar_status()                  # the same, with each target's status, in colour
 tar_dot()                     # Graphviz text of the pipeline, coloured by status
 ```
 
@@ -256,6 +257,7 @@ explanation rather than record the wrong hashes. Load Revise, restart, or use
 | `tar_outdated()` | Targets that would rebuild, with reasons (conservative) |
 | `tar_manifest()` / `tar_meta()` | Target table / stored metadata table |
 | `tar_list(; names, descendants)` | Target names by section (constants, input files, computations, output files), per connected part of the graph, in build order |
+| `tar_status(; names, descendants)` | `tar_list` with each target's status, coloured in the terminal: up to date (green), outdated with its reason (yellow), errored (red), not built (blue) |
 | `tar_invalidate(names = [:a])` | Forget a target's metadata so it rebuilds; keep its object. `tar_invalidate()` does this for every target, after asking (`ask = false` skips the question) |
 | `tar_delete(names = [:a])` | Delete a target's object and metadata |
 | `tar_prune()` | Delete stored targets no longer in the pipeline |
