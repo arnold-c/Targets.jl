@@ -115,6 +115,8 @@ export tar_status, TargetStatus
 
 include("api.jl")
 
+include("fuzzy.jl")
+
 include("macros.jl")
 export @pipeline, @targets, @target, @quarto, @map, @rep, Fragment
 export tar_read, @tar_load, tar_manifest, tar_invalidate, tar_delete, tar_prune, tar_destroy
