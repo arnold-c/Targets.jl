@@ -27,49 +27,110 @@ function method_hash(m::Method, visiting::Set{Method})
     lowered === nothing && return CommandHash(nothing, :unknown)
     push!(visiting, m)
     try
-        return CommandHash(canonical_hash(stable_lowered(lowered, visiting)), :lowered)
+        return CommandHash(
+            canonical_hash(stable_lowered(lowered, visiting, definition_hashes)),
+            :lowered,
+        )
     finally
         delete!(visiting, m)
     end
 end
 
 """
-    stable_lowered(x, visiting)
+    stable_lowered(x, visiting, hash_methods)
 
 Lowered code `x` with every reference to a generated function (keyword body,
-anonymous function, closure) replaced by its stable name and the hashes of its
-methods. Their names carry module-wide counters (`stable_name`), so the
-reference identifies the function by content instead. `visiting` holds the
-methods being hashed, so that recursion stops at its own name.
+anonymous function, closure) replaced by its stable name and
+`hash_methods(ref, visiting)`, the hashes of its methods. Their names carry
+module-wide counters (`stable_name`), so the reference identifies the function
+by content instead. `visiting` holds the methods being hashed, so that
+recursion stops at its own name.
 """
-stable_lowered(x, visiting) = x
+stable_lowered(x, visiting, hash_methods) = x
 # Slot names include generated names too (a keyword body's `#self#` is `#f#12`).
-stable_lowered(x::Symbol, visiting) = stable_name(x)
-stable_lowered(x::Expr, visiting) = Expr(
+stable_lowered(x::Symbol, visiting, hash_methods) = stable_name(x)
+stable_lowered(x::Expr, visiting, hash_methods) = Expr(
     x.head,
-    (stable_lowered(a, visiting) for a in x.args)...
+    (stable_lowered(a, visiting, hash_methods) for a in x.args)...
 )
-stable_lowered(x::Tuple, visiting) = map(a -> stable_lowered(a, visiting), x)
-stable_lowered(x::Core.ReturnNode, visiting) = isdefined(x, :val) ?
-    Core.ReturnNode(stable_lowered(x.val, visiting)) :
+stable_lowered(x::Tuple, visiting, hash_methods) = map(
+    a -> stable_lowered(a, visiting, hash_methods),
+    x,
+)
+stable_lowered(x::Core.ReturnNode, visiting, hash_methods) = isdefined(x, :val) ?
+    Core.ReturnNode(stable_lowered(x.val, visiting, hash_methods)) :
     x
-stable_lowered(x::Core.GotoIfNot, visiting) = Core.GotoIfNot(
-    stable_lowered(x.cond, visiting),
+stable_lowered(x::Core.GotoIfNot, visiting, hash_methods) = Core.GotoIfNot(
+    stable_lowered(x.cond, visiting, hash_methods),
     x.dest,
 )
 # Keep the element type, which is part of the encoding, unless a replacement needs `Any`.
-function stable_lowered(x::AbstractVector, visiting)
-    y = Any[stable_lowered(a, visiting) for a in x]
+function stable_lowered(x::AbstractVector, visiting, hash_methods)
+    y = Any[stable_lowered(a, visiting, hash_methods) for a in x]
     return all(v -> v isa eltype(x), y) ? convert(Vector{eltype(x)}, y) : y
 end
-function stable_lowered(x::GlobalRef, visiting)
+function stable_lowered(x::GlobalRef, visiting, hash_methods)
     name = stable_name(x.name)
     name === x.name && return x
-    hashes = sort!([
-        m in visiting ? "recursive" : something(method_hash(m, visiting).hash, "")
-        for m in generated_methods(x)
-    ])
-    return (GlobalRef(x.mod, name), hashes)
+    return (GlobalRef(x.mod, name), hash_methods(x, visiting))
+end
+
+"Hashes of the methods of the generated function `ref` names, by definition where it can be found (`method_hash`)."
+definition_hashes(ref::GlobalRef, visiting) = sort!([
+    m in visiting ? "recursive" : something(method_hash(m, visiting).hash, "")
+    for m in generated_methods(ref)
+])
+
+"""
+    lowered_fingerprint(m::Method)
+
+Hash of what `m` runs: its lowered code, with the generated functions it refers
+to (including closures with captured types) fingerprinted the same way, never
+by their definitions. Unlike `method_hash`, it does not depend on where the
+definitions are now, so it tells whether two methods made by different
+evaluations of one definition do the same thing. Lowered code depends on the
+Julia version, so fingerprints are only compared within a session.
+"""
+lowered_fingerprint(m::Method) = lowered_fingerprint(m, Set{Method}())
+function lowered_fingerprint(m::Method, visiting::Set{Method})
+    lowered = lowered_source(m)
+    lowered === nothing && return ""
+    push!(visiting, m)
+    try
+        return canonical_hash(stable_lowered(lowered, visiting, lowered_hashes))
+    finally
+        delete!(visiting, m)
+    end
+end
+
+lowered_hashes(ref::GlobalRef, visiting) = sort!([
+    m in visiting ? "recursive" : lowered_fingerprint(m, visiting)
+    for m in closure_methods(ref)
+])
+
+# A closure's fields are named after the generated functions it captured
+# (`getfield(#self#, :#f#12)`), so fingerprints strip counters from quoted names
+# too. Definition hashes keep them, as they always have, so recorded hashes stay
+# valid.
+stable_lowered(x::QuoteNode, visiting, ::typeof(lowered_hashes)) = QuoteNode(stable_lowered(
+    x.value,
+    visiting,
+    lowered_hashes,
+))
+
+"""
+Methods of the generated function or closure type `ref` names, as
+`generated_methods`, but also for closure types with parameters (closures whose
+captured variables have concrete types), which `generated_methods` leaves out.
+"""
+function closure_methods(ref::GlobalRef)
+    latest_isdefined(ref.mod, ref.name) || return Method[]
+    f = latest_getglobal(ref.mod, ref.name)
+    f isa Function && return collect(methods(f))
+    (f isa Type && is_generated_function_type(Base.unwrap_unionall(f))) || return Method[]
+    matches = Base._methods_by_ftype(Tuple{f, Vararg{Any}}, -1, Base.get_world_counter())
+    matches isa AbstractVector || return Method[]
+    return Method[match.method for match in matches]
 end
 
 """

@@ -275,11 +275,40 @@ function consider_binding!(w::Walk, mod::Module, name::Symbol)
         return nothing
     end
     enqueue_user_methods!(w, v)
+    v isa Function && consider_captures!(w, v)
     owner = Base.invokelatest(Base.binding_module, mod, name)
     if !(v isa Function) && is_user_module(owner, w.d.roots) && !(v in w.seen_values)
         push!(w.seen_values, v)
         push!(w.entries, "value:$owner.$name=$(canonical_hash(v))")
         consider_type!(w, typeof(v))
+    end
+    return nothing
+end
+
+"""
+Follow the code a function value runs without naming it: what a closure (or a
+callable struct such as `Base.Fix1`) captured. A closure made by a factory, as in
+`const cached = make_cache(build)`, calls `build` through a captured variable, so
+no source refers to it by name. Captured functions are followed like any other,
+and captured types are considered; other captured values, such as a cache the
+closure fills, are state rather than code and are not hashed.
+"""
+function consider_captures!(w::Walk, f)
+    f in w.seen_values && return nothing
+    push!(w.seen_values, f)
+    for i in 1:nfields(f)
+        isdefined(f, i) || continue
+        v = getfield(f, i)
+        if v isa Core.Box
+            isdefined(v, :contents) || continue
+            v = v.contents
+        end
+        if v isa Type
+            consider_type!(w, v)
+        elseif v isa Function
+            enqueue_user_methods!(w, v)
+            consider_captures!(w, v)
+        end
     end
     return nothing
 end
@@ -326,6 +355,7 @@ function consider_scope!(w::Walk, c::MacroCommand)
             consider_type!(w, v) # a local; its value is part of the command hash
         elseif !(v isa Module)
             enqueue_user_methods!(w, v)
+            v isa Function && consider_captures!(w, v)
         end
     end
     return nothing
@@ -598,6 +628,39 @@ end
     )[1]
     @test with_macro("2") == with_macro("2")
     @test with_macro("2") != with_macro("3")
+end
+
+@testitem "code_hash follows functions captured by a closure stored in a global" setup = [
+    CodeFixtures,
+] begin
+    # A cache of compiled models: the builder is only passed to the factory, and
+    # the closure calls it through a captured variable.
+    code(; build = "n * sum(s)") = """
+    build_system(n, s) = $build
+    function system_cache(build)
+        cache = Dict{Any, Any}()
+        return function cached(args...; series)
+            get!(() -> build(args..., series), cache, (args..., series))
+        end
+    end
+    const CACHED = system_cache(build_system)
+    model(; series) = CACHED(2; series)
+    t = target(:a, () -> model(; series = [1.0]))
+    """
+    base, _ = reach(code())
+    @test reach(code())[1] == base
+    @test reach(code(; build = "n + sum(s)"))[1] != base
+    # what the closure's cache holds is state, not code
+    dir = mktempdir()
+    write(joinpath(dir, "src.jl"), code())
+    m = Module(:Fixture)
+    Core.eval(m, :(using Targets))
+    Base.include(m, joinpath(dir, "src.jl"))
+    t = Base.invokelatest(getproperty, m, :t)
+    hash_now() = Targets.code_hash(Targets.Discovery(Targets.user_roots(dir, [])), t)
+    empty = hash_now()
+    Base.invokelatest(t.f)
+    @test hash_now() == empty == base
 end
 
 @testitem "code_hash terminates on recursion" setup = [CodeFixtures] begin

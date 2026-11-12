@@ -244,10 +244,117 @@ function method_source(m::Method)
     isempty(matching) || return Expr[e for (_, e, _) in matching]
     # Anonymous methods have no name to check the form against: lowered code.
     name === nothing && return nothing
+    moved = moved_closure_source(m, file, name, actual)
+    moved === nothing || return moved
     generated = generating_form(parsed_file(file), line)
     generated === nothing && return nothing
     expr = Expr(generated)
     return generates(expr, name) ? Expr[expr] : nothing
+end
+
+"""
+    moved_closure_source(m, file, name, argnames)
+
+The definition of the closure method `m` (a function named `name` inside a
+function or `let` block) when the line Julia recorded for it no longer holds
+it, found by name and argument names anywhere in `file`. Revise moves named
+methods' lines with their file but cannot map closures, so after an edit above
+the code that creates a closure, the closure keeps its old line, while a fresh
+session finds its definition there; without this, the two sessions would hash
+the closure differently. `nothing` unless exactly one definition matches and
+`m` still runs what the code creating it now makes (`stale_closure`).
+"""
+function moved_closure_source(m::Method, file, name::Symbol, argnames)
+    is_generated_function_type(method_function_type(m)) || return nothing
+    matching = filter(
+        e -> positional_match(definition_argnames(e), argnames),
+        collect_named!(Expr[], parsed_file(file), name),
+    )
+    length(matching) == 1 || return nothing
+    return stale_closure(m) ? nothing : matching
+end
+
+"""
+Whether a definition with positional argument names `candidate` can define a
+method with argument names `actual`: the same names, or for a keyword body,
+whose arguments are the keywords, an unnamed separator, then the positional
+ones, the same names at the end.
+"""
+function positional_match(candidate, actual::Vector{Symbol})
+    candidate === nothing && return true
+    p, n = length(candidate), length(actual)
+    n == p && return names_match(candidate, actual)
+    return n > p &&
+        actual[n - p] === Symbol("") &&
+        names_match(candidate, actual[(n - p + 1):n])
+end
+
+"""
+Whether the closure method `m` runs other code than the newest closure of its
+kind: the code creating it has been evaluated again since `m` was made, and now
+makes a closure that does something else. Revise evaluates a function again when
+it is edited, but not a `const` holding a closure the function made, which then
+runs the old code, so the current definition does not describe it. (Revise also
+evaluates unchanged closure definitions to find their signatures; those make
+closures that do the same thing, and `m` is not stale.)
+"""
+stale_closure(m::Method) = (newest = newest_closure_method(m)) !== m &&
+    lowered_fingerprint(newest) != lowered_fingerprint(m)
+
+"""
+The newest method with `m`'s name and argument names among the closure types
+named like `m`'s up to Julia's counters: each evaluation of the code that
+creates a closure makes such a type.
+"""
+function newest_closure_method(m::Method)
+    T = method_function_type(m)
+    mod = parentmodule(T)
+    own = stable_name(nameof(T))
+    argnames = _argnames(m)
+    newest = m
+    for n in names(mod; all = true)
+        stable_name(n) === own || continue
+        for g in closure_methods(GlobalRef(mod, n))
+            (g.name === m.name && _argnames(g) == argnames) || continue
+            g.primary_world > newest.primary_world && (newest = g)
+        end
+    end
+    return newest
+end
+
+"Definitions of functions named `name` anywhere in `node`, in source order."
+function collect_named!(out::Vector{Expr}, node::SyntaxNode, name::Symbol)
+    k = kind(node)
+    kids = children(node)
+    # Short-form definitions are `=` nodes whose left-hand side is a signature.
+    defines = k == K"function" ||
+        (k == K"=" && kids !== nothing && kind(first(kids)) in SIGNATURE_KINDS)
+    if defines
+        start = source_location(node)[1]
+        c = classify(Expr(node), start, start)
+        (c !== nothing && c[1] == :named && c[3] === name) && push!(out, c[2])
+    end
+    kids === nothing && return out
+    for kid in kids
+        collect_named!(out, kid, name)
+    end
+    return out
+end
+
+const SIGNATURE_KINDS = (K"call", K"where", K"::")
+
+"Positional argument names of a named definition; `nothing` entries are unnamed or destructured."
+function definition_argnames(e::Expr)
+    sig = e.args[1]
+    while sig isa Expr && sig.head in (:where, :(::))
+        sig = sig.args[1]
+    end
+    (sig isa Expr && sig.head == :call) || return nothing
+    return Union{Symbol, Nothing}[
+        lambda_arg(a)
+        for a in sig.args[2:end]
+        if !(a isa Expr && a.head == :parameters)
+    ]
 end
 
 """
@@ -412,22 +519,36 @@ end
 
 @testitem "the generated-method fallback only accepts forms that generate the method" begin
     using Targets: generates
-    @test generates(:(struct P{T} <: Number
-        x::T
-    end), :P)
-    @test !generates(:(struct P
-        x
-    end), :Q)
-    kwdef = :(Base.@kwdef struct K
-        a::Int = 1
-    end)
+    @test generates(
+        :(
+            struct P{T} <: Number
+                x::T
+            end
+        ),
+        :P,
+    )
+    @test !generates(
+        :(
+            struct P
+                x
+            end
+        ),
+        :Q,
+    )
+    kwdef = :(
+        Base.@kwdef struct K
+            a::Int = 1
+        end
+    )
     @test generates(kwdef, :K)
     @test !generates(kwdef, :a) # a field of the struct, not the type
     @test generates(:(@eval f(x) = 1), :f)
     @test !generates(:(@eval g(x) = 1), :f)
 end
 
-@testitem "closures with plain names ask CodeTracking quietly" setup = [SourceFixtures] begin
+@testitem "closures with plain names ask CodeTracking quietly" setup = [
+    SourceFixtures,
+] begin
     using Targets: method_location, method_source
     CodeTracking = Targets.CodeTracking
     m, path = load_source(
@@ -452,6 +573,54 @@ end
         CodeTracking.method_lookup_callback[] = previous
     end
     @test only(method_source(meth)).head == :function
+end
+
+@testitem "a moved closure is found by name until the code creating it runs again" setup = [
+    SourceFixtures,
+] begin
+    using Targets: method_source, canonical_hash
+    factory(; name = "cache") = """
+    function system_cache(build)
+        $name = Dict{Any, Any}()
+        return function cached(args...; series)
+            get!(() -> build(args..., series), $name, args)
+        end
+    end
+    """
+    code(header = "") = header * factory() * "const CACHED = system_cache(+)\n"
+    # the closure's methods and those of what it captured (its keyword body)
+    closure_methods(c) = [
+        collect(methods(c))
+        [
+            x
+            for i in 1:nfields(c)
+            for f in (getfield(c, i),)
+            if f isa Function
+            for x in methods(f)
+        ]
+    ]
+    hashes(c) = [canonical_hash(method_source(x)) for x in closure_methods(c)]
+    m, path = load_source(code())
+    @test all(x -> only(method_source(x)).head == :function, closure_methods(m.CACHED))
+    loaded = hashes(m.CACHED)
+    # What Revise leaves after an edit above the factory: the file has moved on,
+    # and the closure keeps the lines recorded when it was made.
+    moved = code("# a\n# b\nhelper() = 1\n")
+    write(path, moved)
+    @test hashes(m.CACHED) == loaded
+    # a fresh session, finding the definitions at their lines, agrees
+    fresh, _ = load_source(moved)
+    @test hashes(fresh.CACHED) == loaded
+    # Once the factory is evaluated again (Revise does so when it is edited),
+    # the closure kept in the `const` runs the old code: no source for what
+    # changed.
+    Core.eval(m, Meta.parse(factory(; name = "store")))
+    @test any(x -> method_source(x) === nothing, closure_methods(m.CACHED))
+    # evaluating it again unchanged (as Revise does to find signatures) does not
+    m2, path2 = load_source(code())
+    write(path2, moved)
+    Core.eval(m2, Meta.parse(factory()))
+    @test hashes(m2.CACHED) == loaded
 end
 
 @testitem "method_source is nothing without a readable file" begin
