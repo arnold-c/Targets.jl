@@ -60,7 +60,7 @@ word starts and runs of consecutive characters score higher, gaps lower.
 `positions` are the matched character indices, for highlighting.
 """
 function fuzzy_match(query::AbstractString, candidate::AbstractString)
-    chars = collect(candidate)
+    chars = collect(String(candidate)) # plain `Char`s, even for annotated strings
     lower = lowercase.(chars)
     score = 0
     positions = Int[]
@@ -161,8 +161,8 @@ function accept!(f::Finder)
     return :accept
 end
 
-"The picked item indices (`multiple`, in item order) or index."
-picked(f::Finder) = f.multiple ? findall(f.selected) : current(f)
+"The picked item indices, in item order (only the cursor's unless `multiple`)."
+picked(f::Finder) = f.multiple ? findall(f.selected) : [something(current(f))]
 
 """
     handle_key!(f::Finder, key)
@@ -331,7 +331,7 @@ enter chooses, and Esc or ctrl-c cancels. With `multiple`, tab (shift-tab)
 selects the item under the cursor and moves down (up), ctrl-a selects every
 match, and enter without a selection chooses the item under the cursor.
 
-Returns the index of the chosen item, or the sorted indices when `multiple`, or
+Returns the sorted indices of the chosen items (one unless `multiple`), or
 `nothing` if cancelled. The finder is erased afterwards.
 """
 function fuzzy_pick(
@@ -434,10 +434,10 @@ end
     @test pick("model\x01\x01\x15sum\r") == [4] # ctrl-a again unselects
     @test pick("zzz\r") === nothing             # nothing to pick, then the input ends
     @test pick("fit\x03") === nothing
-    @test pick("plot\r"; multiple = false) == 3
-    @test pick("\e[B\e[B\r"; multiple = false) == 3
-    @test pick("\e[A\r"; multiple = false) == 1    # the cursor stops at the top
-    @test pick("model\t\r"; multiple = false) == 1 # no selection in single mode
+    @test pick("plot\r"; multiple = false) == [3]
+    @test pick("\e[B\e[B\r"; multiple = false) == [3]
+    @test pick("\e[A\r"; multiple = false) == [1]    # the cursor stops at the top
+    @test pick("model\t\r"; multiple = false) == [1] # no selection in single mode
 end
 
 @testitem "the finder shows the query, counts and matches" begin

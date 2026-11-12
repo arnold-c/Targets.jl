@@ -780,6 +780,12 @@ With parallel and distributed builds, `progress.log` alone is not enough to see 
 
 *Status: implemented in `src/quarto.jl` (`tar_quarto`, `QuartoReport`, the notebook store lookup), `src/macros.jl` (`@quarto`) and `src/store.jl` (the `store` preference); `passes_values` lives in `src/make.jl`, and jobs expose their store and root to target functions as `RUNNING_PLACE`. Not yet checked against a real Quarto install: that `-M targets-store:...` reaches `QuartoNotebookWorker.notebook_options()` in the notebook, and that `--execute-daemon-restart` and `--cache-refresh` are accepted by `quarto render`.*
 
+### Picking targets at the REPL
+
+`tar_picker()` lists the pipeline's targets (in `tar_list` order) in a fuzzy finder, takes a multiple selection, then offers `tar_make`, `tar_invalidate`, `tar_status` and `tar_visnetwork` on the selection through the same finder, printing the equivalent call before running it. A function, not a macro: it only needs names, and returns the action's result.
+
+**Decision: a small finder of our own, not fzf or TerminalMenus.** Shelling out to `fzf` would add an external program; `REPL.TerminalMenus` cannot filter by typing (its `q` key cancels, and it has no query). `src/fuzzy.jl` matches each space-separated term as a case-insensitive subsequence, ranking word starts and runs higher and gaps lower, and redraws in place. Key decoding, state and drawing take any `IO`, so tests drive them with `IOBuffer`s; only a real terminal is switched to raw mode, with the call REPL itself uses, so REPL is not a dependency.
+
 ### Lower priority, not yet planned
 
 - Cloud or shared stores (S3, GCS): would need an object-storage backend behind `object_path`/`atomic_write`, which Phase 13's interface makes easier.

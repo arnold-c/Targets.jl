@@ -117,6 +117,9 @@ include("api.jl")
 
 include("fuzzy.jl")
 
+include("picker.jl")
+export tar_picker
+
 include("macros.jl")
 export @pipeline, @targets, @target, @quarto, @map, @rep, Fragment
 export tar_read, @tar_load, tar_manifest, tar_invalidate, tar_delete, tar_prune, tar_destroy

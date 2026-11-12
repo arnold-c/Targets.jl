@@ -268,6 +268,7 @@ explanation rather than record the wrong hashes. Load Revise, restart, or use
 | `tar_destroy()` | Delete the whole store (asks first) |
 | `tar_dot(; names, descendants)` | Graphviz DOT, optionally for a sub-graph; renders as SVG in notebooks if Graphviz is installed, `write("p.dot", tar_dot())` saves it |
 | `tar_visnetwork(; names, descendants, interactive)` | Plot (needs a Makie backend, e.g. `using CairoMakie`); with GLMakie (a window) or WGLMakie (a browser tab) active it is interactive by default: drag targets (shift-click or shift-drag to select several and move them together), pan and zoom, and hide targets by kind or status, hide the selection, show only the selection, or bring back everything upstream or downstream of the targets still shown, from the side panel (`interactive = false` for a static figure) |
+| `tar_picker()` | At the REPL: pick targets in a fuzzy finder (type part of a name, tab or ctrl-a to select, enter to finish), then run `tar_make`, `tar_invalidate`, `tar_status` or `tar_visnetwork` on them, chosen the same way |
 
 ## Practical notes
 
