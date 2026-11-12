@@ -185,8 +185,10 @@ function run_remote(
         Store(store_root),
         root,
     )
-    # the worker loaded the script after this function was compiled
-    r = cd(() -> Base.invokelatest(execute_granted, job, slots), root)
+    # the worker loaded the script after this function was compiled; a worker's
+    # output is not the user's terminal, so its jobs count as concurrent (quiet)
+    run() = cd(() -> Base.invokelatest(execute_granted, job, slots), root)
+    r = with(run, BUILD_JOBS => 2)
     failed(r) ||
         return RemoteResult(r.value_hash, r.stored, r.seconds, nothing, String[], r.retried)
     return RemoteResult(

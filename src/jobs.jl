@@ -140,6 +140,14 @@ end
 "Whether `execute` checks that targets leave their arguments unchanged (`tar_make(; check_mutation)`)."
 const CHECK_MUTATION = ScopedValue(false)
 
+"""
+How many jobs the running build can run at once (the executor's capacity; `1`
+outside a build). Jobs that print to the terminal, such as a Quarto render with
+`quiet = false`, stay silent when it is above `1`, because their output would
+interleave.
+"""
+const BUILD_JOBS = ScopedValue(1)
+
 function check_unmutated(job::Job, before::Vector{String})
     for (i, h) in enumerate(before)
         canonical_hash(job.args[i]) == h && continue

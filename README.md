@@ -221,7 +221,8 @@ targets-store: ../_targets
 Each render restarts Quarto's Julia worker for the document, so edited code is
 never stale (`restart = false` keeps it), and refreshes Quarto's cache. Quarto's
 output is shown only when a render fails; `quiet = false` prints it in the REPL
-as the render runs. Quarto
+as the render runs, but only when the build runs one job at a time (with `jobs > 1`
+it stays quiet, since concurrent output would interleave). Quarto
 projects (`_quarto.yml`) and rendering one document several times with different
 parameters are not supported.
 

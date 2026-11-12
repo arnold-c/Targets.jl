@@ -472,6 +472,10 @@ function run_quarto(
     return nothing
 end
 
+# Where a render's output goes: `stdout` only when asked for and the build runs
+# one job at a time, since concurrent renders would interleave their output.
+quarto_echo(r::QuartoReport) = r.quiet || BUILD_JOBS[] > 1 ? devnull : stdout
+
 function (r::QuartoReport)(_...)
     place = RUNNING_PLACE[]
     store = place === nothing ? abspath(default_store_path()) : place.store
@@ -484,7 +488,7 @@ function (r::QuartoReport)(_...)
     outputs = expected_outputs(r)
     args = quarto_cli_args(r, store)
     if r.runner === nothing
-        run_quarto(r.quarto, args, root; echo = r.quiet ? devnull : stdout)
+        run_quarto(r.quarto, args, root; echo = quarto_echo(r))
     else
         r.runner(args, root)
     end
@@ -581,7 +585,10 @@ which it declares with defaults under `params:` in its front matter; changing
 one rebuilds the report. Each render restarts Quarto's Julia worker for the document, so
 edited code is never stale (`restart = false` keeps it, which is faster),
 and refreshes Quarto's cache. `quiet = false` prints Quarto's output in the
-REPL while it renders; by default it is shown only if the render fails. Neither
+REPL while it renders, but only when the build runs one job at a time (`jobs = 1`,
+the default): with more jobs the output of concurrent renders would interleave, so
+it stays quiet without editing the pipeline. By default the output is shown only
+if the render fails. Neither
 changes when the report rebuilds. `quarto` is the Quarto executable. Other keyword
 arguments go to [`target`](@ref) (`cue`, `error`, `retries`, ...).
 """
@@ -1074,6 +1081,28 @@ end
         loud = tar_quarto(:r, path; quiet = false)
         @test !loud.f.quiet && tar_quarto(:r, path).f.quiet
         @test Targets.command_hash(loud) == Targets.command_hash(tar_quarto(:r, path))
+    end
+end
+
+@testitem "quiet = false prints only while the build runs one job at a time" begin
+    using Targets: BUILD_JOBS, quarto_echo, with
+    mktempdir() do dir
+        path = joinpath(dir, "r.qmd")
+        write(path, "text")
+        loud = tar_quarto(:r, path; quiet = false).f
+        quiet = tar_quarto(:r, path).f
+        @test quarto_echo(loud) === stdout # outside a build
+        @test quarto_echo(quiet) === devnull
+        with(BUILD_JOBS => 4) do
+            @test quarto_echo(loud) === devnull
+        end
+        # tar_make tells jobs how wide it runs
+        seen = Int[]
+        p = tar_pipeline(target(:w, () -> (push!(seen, BUILD_JOBS[]); 1)))
+        for jobs in (1, 3)
+            tar_make(p; store = joinpath(dir, "s$jobs"), root = dir, io = devnull, jobs)
+        end
+        @test seen == [1, 3]
     end
 end
 

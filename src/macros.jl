@@ -901,11 +901,13 @@ end
                 @pipeline begin
                     @target n = 1
                     @quarto report = $report cue = :always
-                    @quarto $summary
+                    @quarto $summary quiet = false
                     @target size = length(report)
                 end
             ),
         )
+        @test !Targets.get_target(p, :summary).f.quiet
+        @test Targets.get_target(p, :report).f.quiet
         q = tar_pipeline(
             target(:n, () -> 1),
             tar_quarto(:report, report; cue = :always),

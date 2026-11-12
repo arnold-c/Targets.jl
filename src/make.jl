@@ -356,7 +356,7 @@ function build_pipeline(
     queue = ReadyQueue(p, selected; priority)
     event!(ctx, "", :run_started)
     try
-        with(CHECK_MUTATION => check_mutation) do
+        with(CHECK_MUTATION => check_mutation, BUILD_JOBS => slots) do
             cd(rootdir) do
                 start!(exec, ctx)
                 try
