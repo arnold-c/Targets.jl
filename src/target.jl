@@ -70,7 +70,12 @@ uses the same seed, so retrying a deterministic failure is pointless.
 """
 function target(
     name::Symbol,
-    f;
+    # `f` is only stored and inspected, never called here. Each load of a
+    # pipeline script makes new closures, so specializing on them would compile
+    # this (and the helpers below) again for every target on every load. The
+    # keyword body has too many arguments for Julia's rule against specializing
+    # on uncalled functions to apply, hence the explicit `@nospecialize`.
+    @nospecialize(f);
     deps::Union{Nothing, AbstractVector{Symbol}} = nothing,
     format::Union{Symbol, StorageFormat} = :jld2,
     pattern::Union{Nothing, Symbol, Pattern} = nothing,
@@ -144,7 +149,7 @@ end
 # The single place that touches the Base internal `method_argnames`.
 _argnames(m::Method) = Symbol[Base.method_argnames(m)[2:end]...]
 
-function single_method(f, name::Symbol)
+function single_method(@nospecialize(f), name::Symbol)
     ms = collect(methods(f))
     length(ms) == 1 && return only(ms)
     throw(ArgumentError(
@@ -158,7 +163,7 @@ end
 
 Names of the positional arguments of the single method of `f`.
 """
-function arg_names(f, name::Symbol = :target)
+function arg_names(@nospecialize(f), name::Symbol = :target)
     m = single_method(f, name)
     m.isva &&
         throw(ArgumentError(
@@ -177,7 +182,7 @@ function arg_names(f, name::Symbol = :target)
     return args
 end
 
-function check_explicit_deps(f, name::Symbol, deps::Vector{Symbol})
+function check_explicit_deps(@nospecialize(f), name::Symbol, deps::Vector{Symbol})
     m = single_method(f, name)
     nargs = length(_argnames(m))
     ok = m.isva ? length(deps) >= nargs - 1 : length(deps) == nargs
