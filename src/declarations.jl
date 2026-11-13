@@ -53,10 +53,15 @@ itself, and `scope` returns what each of those names means where the block was
 written (`UNDEFINED` when nothing). `inputs` says where each value comes from,
 once the pipeline is assembled: `nothing` for the value from `scope`, the
 position of a dependency, or a `GroupInput` for a `@map` template.
+
+`body` and `scope` are untyped on purpose: each load of a pipeline script
+makes new closures, and type parameters would make every function that
+receives a command compile again for each target on every load. Both are
+only ever called through `invokelatest`, so nothing is lost.
 """
-struct MacroCommand{B, S}
-    body::B
-    scope::S
+struct MacroCommand
+    body::Any
+    scope::Any
     refs::Vector{Symbol}
     mod::Module
     inputs::Vector{Any}
