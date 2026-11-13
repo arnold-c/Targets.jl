@@ -568,22 +568,29 @@ with the given options.
 """
 macro pipeline(args...)
     isempty(args) && error("@pipeline expects a `begin ... end` block of @target lines")
-    options = Any[]
-    for opt in args[1:(end - 1)]
+    keywords = pipeline_keywords(args[1:(end - 1)])
+    fragment = fragment_code(args[end], __module__, "@pipeline")
+    return esc(pipeline_call(keywords, fragment))
+end
+
+"The keyword arguments of `tar_pipeline` that `@pipeline`'s `options` give."
+pipeline_keywords(options) = Expr(
+    :parameters,
+    map(options) do opt
         (Meta.isexpr(opt, :(=)) && opt.args[1] in PIPELINE_OPTIONS) ||
             error(
                 "@pipeline accepts only `track = [...]` and `seed = ...` options before its block, got `$opt`",
             )
-        push!(options, Expr(:kw, opt.args[1], opt.args[2]))
-    end
-    call = Expr(
-        :call,
-        GlobalRef(@__MODULE__, :tar_pipeline),
-        Expr(:parameters, options...),
-        fragment_code(args[end], __module__, "@pipeline"),
-    )
-    return esc(call)
-end
+        return Expr(:kw, opt.args[1], opt.args[2])
+    end...,
+)
+
+pipeline_call(keywords::Expr, fragment) = Expr(
+    :call,
+    GlobalRef(@__MODULE__, :tar_pipeline),
+    keywords,
+    fragment,
+)
 
 @testmodule MacroFixtures begin
     using Targets
