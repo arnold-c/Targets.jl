@@ -99,14 +99,17 @@ end
 The absolute paths of a document and of every file it uses, recursively, in
 the order they are first reached: documents it includes with
 `{{< include >}}`, and Julia files its code (or theirs) loads with
-`include("...")` or `includet("...")`. Included paths are relative to the file
-that includes them; an include that does not exist is an error. Includes
-whose path is not a literal are pushed to `dynamic`, as text.
+`include("...")` or `includet("...")`. As in Quarto, paths in a document,
+included documents too, are relative to the directory of the top document
+(`root`); paths in a Julia file are relative to that file. An include that
+does not exist is an error. Includes whose path is not a literal are pushed
+to `dynamic`, as text.
 """
 function quarto_sources(
     path::AbstractString,
     found = String[];
     dynamic::Vector{String} = String[],
+    root::AbstractString = dirname(normpath(abspath(path))),
 )
     file = normpath(abspath(path))
     file in found && return found
@@ -120,10 +123,11 @@ function quarto_sources(
         append!(linked, paths)
         append!(dynamic, dyn)
     end
+    base = is_julia_file(file) ? dirname(file) : root
     for inc in linked
-        target = normpath(joinpath(dirname(file), inc))
+        target = normpath(joinpath(base, inc))
         isfile(target) || error("`$file` includes `$inc`, which does not exist")
-        quarto_sources(target, found; dynamic)
+        quarto_sources(target, found; dynamic, root)
     end
     return found
 end
@@ -757,25 +761,35 @@ rendered_by_make(options = notebook_options()) = notebook_value(
     @test !any(contains("not_executed"), parts.prose)
 end
 
-@testitem "quarto_sources follows includes relative to the including file" begin
+@testitem "quarto_sources resolves document includes from the top document" begin
     using Targets: quarto_sources
     mktempdir() do dir
         mkpath(joinpath(dir, "parts"))
+        mkpath(joinpath(dir, "code"))
         write(
             joinpath(dir, "report.qmd"),
             "A\n{{< include parts/_a.qmd >}}\n{{< include \"parts/_a.qmd\" >}}\n",
         )
         write(
             joinpath(dir, "parts", "_a.qmd"),
-            "B\n{{< include _b.qmd >}}\n```\n{{< include _no.qmd >}}\n```\n",
+            "B\n{{< include parts/_b.qmd >}}\n```\n{{< include _no.qmd >}}\n```\n" *
+                "```{julia}\ninclude(\"code/x.jl\")\n```\n",
         )
-        write(joinpath(dir, "parts", "_b.qmd"), "C\n{{< include ../report.qmd >}}\n")
+        write(joinpath(dir, "parts", "_b.qmd"), "C\n{{< include report.qmd >}}\n")
+        write(joinpath(dir, "code", "x.jl"), "include(\"y.jl\")\n")
+        write(joinpath(dir, "code", "y.jl"), "y = 1\n")
         @test quarto_sources(joinpath(dir, "report.qmd")) ==
             normpath.([
                 joinpath(dir, "report.qmd"),
                 joinpath(dir, "parts", "_a.qmd"),
                 joinpath(dir, "parts", "_b.qmd"),
+                joinpath(dir, "code", "x.jl"),
+                joinpath(dir, "code", "y.jl"),
             ])
+        # Not resolved from the including document: Quarto does not do that.
+        write(joinpath(dir, "parts", "_c.qmd"), "{{< include _b.qmd >}}\n")
+        write(joinpath(dir, "nested.qmd"), "{{< include parts/_c.qmd >}}\n")
+        @test_throws "includes `_b.qmd`" quarto_sources(joinpath(dir, "nested.qmd"))
         write(joinpath(dir, "bad.qmd"), "{{< include missing.qmd >}}\n")
         @test_throws "includes `missing.qmd`" quarto_sources(joinpath(dir, "bad.qmd"))
         @test_throws "does not exist" quarto_sources(joinpath(dir, "none.qmd"))
