@@ -565,6 +565,11 @@ end
 
 [`tar_pipeline`](@ref) of the [`@targets`](@ref) fragment the block declares,
 with the given options.
+
+When `tar_make` and the other functions load a pipeline script, a `@pipeline`
+or `@targets` block written at its top level runs one line at a time, which is
+much faster for large blocks and declares the same targets with the same
+hashes.
 """
 macro pipeline(args...)
     isempty(args) && error("@pipeline expects a `begin ... end` block of @target lines")
@@ -591,6 +596,144 @@ pipeline_call(keywords::Expr, fragment) = Expr(
     keywords,
     fragment,
 )
+
+## Splitting top-level blocks of a pipeline script
+##
+## Julia lowers each top-level statement as a whole, in time that grows with
+## the square of the closures it holds, and a block makes two per target: a
+## block of a few hundred targets takes seconds to lower on every load. When a
+## pipeline script is loaded, a `@pipeline` or `@targets` block written at top
+## level is therefore run as one statement per line instead. The macros cannot
+## do this themselves: they may be used where only a single expression is
+## allowed (in a function, `let` or `try`).
+##
+## Each statement runs in a `let` that binds the block's variables assigned so
+## far, kept in a dictionary between statements, so every closure captures
+## exactly what it does in the macro's single `let`: targets, values and hashes
+## are the same. Blocks where that cannot hold keep the macro's expansion.
+
+"""
+    split_toplevel(mod, ex)
+
+The top-level statement `ex` of a pipeline script loaded into `mod`, with a
+`@pipeline` or `@targets` block (on its own or assigned to a name) run as one
+statement per line. Any other statement, a block that cannot be split (see
+[`split_block`](@ref)) and one with errors (which the macro then reports) are
+returned unchanged.
+"""
+function split_toplevel(mod::Module, ex)
+    name, call = Meta.isexpr(ex, :(=)) && ex.args[1] isa Symbol ?
+        (ex.args[1], ex.args[2]) :
+        (nothing, ex)
+    Meta.isexpr(call, :macrocall) || return ex
+    kind = block_macro(mod, call.args[1])
+    kind === nothing && return ex
+    args = call.args[3:end] # `args[2]` is the macro call's line
+    isempty(args) && return ex
+    split = try
+        split_block(args[end], mod)
+    catch e
+        e isa InterruptException && rethrow()
+        nothing
+    end
+    split === nothing && return ex
+    code, fragment = split
+    value = if kind === :pipeline
+        keywords = try
+            pipeline_keywords(args[1:(end - 1)])
+        catch e
+            e isa InterruptException && rethrow()
+            return ex
+        end
+        pipeline_call(keywords, fragment)
+    else
+        length(args) == 1 || return ex
+        fragment
+    end
+    return Expr(:toplevel, code..., name === nothing ? value : Expr(:(=), name, value))
+end
+
+"`:pipeline` or `:targets` if `name` (as written in `mod`) is that macro of Targets, else `nothing`."
+function block_macro(mod::Module, name)
+    owner, binding = if name isa Symbol
+        (mod, name)
+    elseif Meta.isexpr(name, :.) && length(name.args) == 2 && name.args[2] isa QuoteNode
+        (resolve_module(mod, name.args[1]), name.args[2].value)
+    else
+        (nothing, nothing)
+    end
+    (owner === nothing || !(binding isa Symbol) || !latest_isdefined(owner, binding)) &&
+        return nothing
+    value = latest_getglobal(owner, binding)
+    value === getglobal(@__MODULE__, Symbol("@pipeline")) && return :pipeline
+    value === getglobal(@__MODULE__, Symbol("@targets")) && return :targets
+    return nothing
+end
+
+"""
+    split_block(block, mod)
+
+Top-level statements that run the lines of `block` one at a time, and the code
+of the resulting `Fragment`, or `nothing` if the block keeps the macro's single
+`let`: when it assigns a variable more than once, or a line mentions a
+variable assigned only later. (A closure in the single `let` sees the last value
+of a variable, even one assigned after it; one statement cannot see what later
+statements assign.)
+"""
+function split_block(block, mod::Module)
+    Meta.isexpr(block, :block) || return nothing
+    b = parse_block(block)
+    lines = [ex for ex in block.args if !(ex isa LineNumberNode)]
+    assigned = map(assigned_names, b.items)
+    all_assigned = reduce(vcat, assigned; init = Symbol[])
+    allunique(all_assigned) || return nothing
+    variables, declarations = gensym(:variables), gensym(:declarations)
+    code = Any[
+        Expr(:(=), variables, Expr(:call, GlobalRef(@__MODULE__, :BlockVariables))),
+        Expr(:(=), declarations, Expr(:ref, GlobalRef(@__MODULE__, :Declaration))),
+    ]
+    context = (; variables, declarations, block = b, mod)
+    defined = Symbol[]
+    for (item, line, names) in zip(b.items, lines, assigned)
+        pending = setdiff(all_assigned, defined, names)
+        any(in(pending), appearance_order(line)) && return nothing
+        bindings = Expr(
+            :block,
+            (Expr(:(=), v, Expr(:ref, variables, QuoteNode(v))) for v in defined)...
+        )
+        push!(code, item.line, line_code(item, names, bindings, context))
+        append!(defined, names)
+    end
+    fragment = Expr(:call, GlobalRef(@__MODULE__, :Fragment), declarations)
+    return code, fragment
+end
+
+"The variables of a block being run one line at a time, between its statements."
+const BlockVariables = Dict{Symbol, Any}
+
+# A variable assignment, saving what it binds for the lines after it.
+function line_code(item::AssignLine, names, bindings::Expr, context)
+    saves = [Expr(:(=), Expr(:ref, context.variables, QuoteNode(n)), n) for n in names]
+    body = Expr(:block, Expr(:local, names...), item.ex, saves..., nothing)
+    return Expr(:let, bindings, body)
+end
+
+# Any other line adds its declarations, as it does in the macro's `let`.
+function line_code(item, names, bindings::Expr, context)
+    acc = gensym(:declarations)
+    body = Expr(
+        :block,
+        Expr(:(=), acc, Expr(:ref, GlobalRef(@__MODULE__, :Declaration))),
+        item_code(item, acc, Block[context.block], context.mod),
+        acc,
+    )
+    return Expr(
+        :call,
+        GlobalRef(Base, :append!),
+        context.declarations,
+        Expr(:let, bindings, body),
+    )
+end
 
 @testmodule MacroFixtures begin
     using Targets
@@ -1181,5 +1324,92 @@ end
         tar_make(p; store, root = dir, io = devnull)
         @test tar_read(:real_fits; store) == (seir = (1, :real), staged = (2, :real))
         @test tar_read(:campaign_staged; store) == (2, :real)
+    end
+end
+
+@testitem "a loaded script runs top-level blocks a line at a time, with the same targets" begin
+    using Targets:
+        split_toplevel,
+        load_pipeline,
+        command_hash,
+        code_hash,
+        Discovery,
+        user_roots
+    script = """
+    step(x, i) = x + i
+    double(x) = 2x
+    function scaled(factor)
+        return @targets begin
+            @target scaled = step(base, factor)
+        end
+    end
+    part = @targets begin
+        @target extra = step(base, 2)
+    end
+    p = @pipeline seed = 3 begin
+        offset = 10
+        @target base = 1
+        @target shifted = step(base, offset)
+        @target grid = [1, 2, 3]
+        @target per_grid = step(grid, base)  pattern = grid
+        @map((low = 1, high = 2)) do k
+            @target arm = double(step(shifted, k + offset))
+        end
+        @target arms_total = sum(arm)
+        @rep sims = rand() + base  batches = 2  reps = 3
+        scaled(5)
+        part
+    end
+    """
+    mktempdir() do dir
+        path = joinpath(dir, "_targets.jl")
+        write(path, script)
+        # the same module name as `load_pipeline`'s, which code hashes record
+        m = Module(:TargetsScript)
+        Core.eval(m, :(using Targets))
+        plain = Base.include(m, path)
+        split = load_pipeline(path)
+        summary(p) = (
+            d = Discovery(user_roots(dir, p.track));
+            [(t.name, t.deps, command_hash(t).hash, code_hash(d, t)) for t in p.targets]
+        )
+        @test length(split.targets) == 12
+        @test summary(split) == summary(plain)
+        @test split.seed == plain.seed == 3
+
+        statements = filter(x -> !(x isa LineNumberNode), Meta.parseall(script).args)
+        @test !Meta.isexpr(split_toplevel(m, statements[3]), :toplevel) # a function
+        @test Meta.isexpr(split_toplevel(m, statements[4]), :toplevel)  # @targets
+        @test Meta.isexpr(split_toplevel(m, statements[5]), :toplevel)  # @pipeline
+        qualified = Meta.parse("Targets.@pipeline begin\n@target a = 1\nend")
+        @test Meta.isexpr(split_toplevel(m, qualified), :toplevel)
+    end
+end
+
+@testitem "blocks whose variables a line at a time would change are not split" begin
+    using Targets: split_toplevel, load_pipeline
+    m = Module()
+    Core.eval(m, :(using Targets))
+    unsplit(code) = !Meta.isexpr(split_toplevel(m, Meta.parse(code)), :toplevel)
+    reassigned = """
+    @pipeline begin
+        d = "a"
+        @target x = d
+        d = "b"
+        @target y = d
+    end
+    """
+    @test unsplit(reassigned)
+    @test unsplit("@pipeline begin\n@target x = d\nd = 1\nend")  # assigned after use
+    @test unsplit("@pipeline bad = 1 begin\n@target x = 1\nend") # the macro reports it
+    @test unsplit("@pipeline 5")
+    @test unsplit("tar_pipeline(target(:x, () -> 1))")
+    mktempdir() do dir
+        path = joinpath(dir, "_targets.jl")
+        write(path, reassigned)
+        store = joinpath(dir, "_targets")
+        tar_make(load_pipeline(path); store, root = dir, io = devnull)
+        # closures in a block see a variable's last value
+        @test tar_read(:x; store) == tar_read(:y; store) == "b"
     end
 end

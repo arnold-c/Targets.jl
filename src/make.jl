@@ -387,10 +387,12 @@ function load_pipeline(script::AbstractString)
     isfile(script) || error("no pipeline script at $script")
     m = register_script!(script, Module(:TargetsScript))
     Core.eval(m, :(using Targets))
+    # top-level `@pipeline`/`@targets` blocks run a line at a time: much faster to lower
+    split = ex -> split_toplevel(m, ex)
     # a plain Module has no `include`/`eval`, which scripts reasonably expect
-    Core.eval(m, :(include(path::AbstractString) = Base.include($m, path)))
+    Core.eval(m, :(include(path::AbstractString) = Base.include($split, $m, path)))
     Core.eval(m, :(eval(ex) = Core.eval($m, ex)))
-    p = Base.include(m, script)
+    p = Base.include(split, m, script)
     p isa Pipeline ||
         error(
             "$script must end with a `tar_pipeline(...)` call, but returned `$(typeof(p))`",
