@@ -1,4 +1,6 @@
 Manifest*.toml
+docs/node_modules/
+docs/build/
 .pi/
 examples/.demo-*/
 examples/.features-*/

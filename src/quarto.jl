@@ -564,8 +564,8 @@ A target that renders the Quarto document `path` (a `.qmd` file) with the
 script (`_targets.jl`).
 
 Its dependencies are the targets the document's executable Julia cells (and
-inline Julia code, the documents it includes with `{{< include >}}`, and the
-Julia files its code loads with `include("file.jl")`, `includet` or
+inline Julia code, the documents it includes with Quarto's `include` shortcode,
+and the Julia files its code loads with `include("file.jl")`, `includet` or
 `include(joinpath(@__DIR__, ...))`, recursively) read with `tar_read(:name)`
 or `@tar_load name`, found without running anything, plus `deps`. Cells
 marked `#| eval: false` are skipped. Reads whose name, and includes whose path,

@@ -32,7 +32,7 @@ end
 """
     JobResult
 
-The outcome of [`execute`](@ref): the value consumers receive, its value hash
+The outcome of running a job (`execute`): the value consumers receive, its value hash
 and extra record fields, or the exception (and backtrace) the job raised.
 """
 struct JobResult
