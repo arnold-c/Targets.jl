@@ -81,9 +81,15 @@ MacroCommand(c::MacroCommand, inputs::Vector{Any}) = MacroCommand(
     inputs,
 )
 
+# Each target's scope is a `NamedTuple` of its own type (its fields are the
+# target's references), so nothing here may specialize on it, or every target
+# would compile its own copy of this call the first time it runs.
 function (c::MacroCommand)(values...)
     scope = Base.invokelatest(c.scope)
-    args = map((name, input) -> input_value(input, values, scope, name), c.refs, c.inputs)
+    args = Vector{Any}(undef, length(c.refs))
+    for i in eachindex(args, c.refs, c.inputs)
+        args[i] = input_value(c.inputs[i], values, scope, c.refs[i])
+    end
     return Base.invokelatest(c.body, args...)
 end
 
@@ -97,12 +103,11 @@ struct GroupInput
     parts::Vector{Any}
 end
 
-input_value(i::Int, values, scope, name) = values[i]
-input_value(g::GroupInput, values, scope, name) = NamedTuple{Tuple(g.keys)}(Tuple(
-    input_value(p, values, scope, name)
-    for p in g.parts
-))
-function input_value(::Nothing, values, scope, name)
+input_value(i::Int, @nospecialize(values), @nospecialize(scope), name) = values[i]
+input_value(g::GroupInput, @nospecialize(values), @nospecialize(scope), name) = NamedTuple{
+    Tuple(g.keys),
+}(Tuple(input_value(p, values, scope, name) for p in g.parts))
+function input_value(::Nothing, @nospecialize(values), @nospecialize(scope), name)
     v = getfield(scope, name)
     v isa Undefined && throw(UndefVarError(name))
     return v
