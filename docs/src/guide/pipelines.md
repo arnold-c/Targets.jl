@@ -5,6 +5,10 @@ A pipeline is a set of targets and the dependencies between them. It lives in
 `tar_read` and the other functions load that file into a fresh module each time, so nothing
 leaks in from your session.
 
+Each target name can be declared only once in a pipeline. Declaring a name twice, in the
+same block, in two fragments, or through names that `@map`, `tar_map` or `@rep` generate,
+is an error that gives the line of each declaration.
+
 !!! tip "Where to keep code"
     Put functions and types in a **named module or package** (for example
     `src/MyAnalysis.jl`, loaded with `using MyAnalysis`), and keep `_targets.jl` to

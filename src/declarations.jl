@@ -252,18 +252,37 @@ final_name(name::Symbol, path) = foldr(
     init = name,
 )
 
-function all_names!(names, level::Level)
+"Where a declaration is written: its line, or `nothing` for a `target()`."
+declared_at(::PlainDeclaration) = nothing
+declared_at(d::Declaration) = d.line
+
+"""
+Every target name declared at `level` and in its `@map`s, mapped to where it
+is declared; errors on a name declared more than once.
+"""
+function all_names!(names::Dict{Symbol, Any}, level::Level)
     for d in level.declarations, n in template_names(d)
-        push!(names, final_name(n, level.path))
+        name = final_name(n, level.path)
+        haskey(names, name) && throw(duplicate_name(name, names[name], declared_at(d)))
+        names[name] = declared_at(d)
     end
     foreach(bs -> foreach(b -> all_names!(names, b), bs), level.branches)
     return names
 end
 
+function duplicate_name(name::Symbol, lines...)
+    places = unique(location(l) for l in lines if l !== nothing)
+    at = isempty(places) ? "" : " (declared at " * join(places, " and ") * ")"
+    return PipelineError(
+        "duplicate target name `$name`$at: each target can be declared only once " *
+            "in a pipeline",
+    )
+end
+
 "The targets that `ds` declare, ordered as [`tar_map`](@ref) orders branches."
 function assemble(ds::Vector{Declaration})
     root = Level(ds, Tuple{String, Bool}[], nothing)
-    asm = Assembly(all_names!(Set{Symbol}(), root))
+    asm = Assembly(Set(keys(all_names!(Dict{Symbol, Any}(), root))))
     return Target[t for (_, t) in level_targets(root, asm)]
 end
 

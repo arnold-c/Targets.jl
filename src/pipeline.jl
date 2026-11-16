@@ -80,7 +80,8 @@ function build_index(targets)
     for (i, t) in enumerate(targets)
         haskey(index, t.name) &&
             throw(PipelineError(
-                "duplicate target name `$(t.name)` (targets $(index[t.name]) and $i)",
+                "duplicate target name `$(t.name)` (targets $(index[t.name]) and $i): " *
+                    "each target can be declared only once in a pipeline",
             ))
         index[t.name] = i
     end

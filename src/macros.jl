@@ -840,6 +840,109 @@ end
     )
 end
 
+@testitem "a target name declared more than once is an error with its lines" begin
+    m = Module(:Duplicates)
+    Core.eval(m, :(using Targets))
+    duplicated(ex) = try
+        Core.eval(m, ex)
+        ""
+    catch e
+        e isa Targets.PipelineError ? e.msg : rethrow()
+    end
+    # declared twice, whether or not another target refers to it
+    for block in (
+            :(
+                begin
+                    @target a = 1
+                    @target a = 2
+                end
+            ),
+            :(
+                begin
+                    @target a = 1
+                    @target b = a + 1
+                    @target a = 2
+                end
+            ),
+        )
+        msg = duplicated(:(@pipeline $block))
+        @test startswith(msg, "duplicate target name `a` (declared at ")
+        @test occursin(r":\d+ and .*:\d+\)", msg)
+        @test occursin("declared only once", msg)
+    end
+    # in another fragment, as a target(), from a @map or from a @rep
+    Core.eval(
+        m,
+        :(
+            inner() = @targets begin
+                @target a = 2
+            end
+        ),
+    )
+    @test startswith(
+        duplicated(
+            :(
+                @pipeline begin
+                    @target a = 1
+                    inner()
+                    @target b = a
+                end
+            ),
+        ),
+        "duplicate target name `a`",
+    )
+    @test startswith(
+        duplicated(
+            :(
+                @pipeline begin
+                    inner()
+                    inner()
+                end
+            ),
+        ),
+        "duplicate target name `a`",
+    )
+    @test startswith(
+        duplicated(
+            :(
+                @pipeline begin
+                    target(:a, () -> 1)
+                    @target a = 2
+                end
+            ),
+        ),
+        "duplicate target name `a`",
+    )
+    @test startswith(
+        duplicated(
+            :(
+                @pipeline begin
+                    @map((p = 1, q = 2)) do v
+                        @target a = v
+                    end
+                    @target a_p = 3
+                end
+            ),
+        ),
+        "duplicate target name `a_p`",
+    )
+    @test startswith(
+        duplicated(
+            :(
+                @pipeline begin
+                    @rep a = rand() batches = 2 reps = 2
+                    @target a_batch = 1
+                end
+            ),
+        ),
+        "duplicate target name `a_batch`",
+    )
+    @test_throws "duplicate target name `a`" tar_pipeline(
+        target(:a, () -> 1),
+        [target(:a, () -> 2)],
+    )
+end
+
 @testitem "a target's own name means the function; other targets shadow functions" begin
     total(xs) = sum(xs)
     p = @pipeline begin
