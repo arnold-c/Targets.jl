@@ -71,6 +71,8 @@ tar_pipeline(
 
 ## Where next
 
+- [Tutorial](tutorial.md): a whole workflow, step by step: a project, a first build, the
+  graph, a code change, and debugging a failed target.
 - [Declaring pipelines](guide/pipelines.md): the macro and function forms, fragments, static
   branching and replication.
 - [Branching](guide/branching.md): static against dynamic branching, and branching over

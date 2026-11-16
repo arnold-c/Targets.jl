@@ -17,6 +17,7 @@ makedocs(;
     checkdocs = :exports,
     pages = [
         "Home" => "index.md",
+        "Tutorial" => "tutorial.md",
         "Guide" => [
             "Declaring pipelines" => "guide/pipelines.md",
             "Branching" => "guide/branching.md",
