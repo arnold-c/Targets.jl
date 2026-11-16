@@ -14,12 +14,16 @@ function user_frames(backtrace)
     ours(fr) = occursin("call_target", string(fr.func))
     stop = findfirst(ours, frames)
     user = frames[1:(stop === nothing ? end : stop - 1)]
-    # the frames between Targets and the user's function (scoped values, world age)
-    while !isempty(user) && user[end].func in (:with, :invokelatest, :invoke_in_world)
+    # the frames between Targets and the user's function (scoped values, world age,
+    # and Targets' own callables, such as the function of a `@target`)
+    while !isempty(user) && between_frame(user[end])
         pop!(user)
     end
     return [string(fr) for fr in user]
 end
+
+between_frame(fr) = fr.func in (:with, :invokelatest, :invoke_in_world) ||
+    parentmodule(fr) === @__MODULE__
 
 """
     tar_errored(; store = default_store_path())
@@ -327,6 +331,15 @@ end
         @test any(f -> occursin("inner", f), tb) && any(f -> occursin("outer", f), tb)
         @test !any(f -> occursin("call_target", f) || occursin("execute", f), tb)
         @test only(tar_errored(; store)).name == "bad"
+        # a macro target's traceback ends at its own line, not in Targets
+        q = @pipeline begin
+            @target w = 1
+            @target bad = outer(w) error = :continue
+        end
+        tar_make(q; store, root = dir, io = devnull, force = true)
+        tb = tar_traceback(:bad; store)
+        @test any(f -> occursin("outer", f), tb)
+        @test !any(f -> occursin("Targets.", f), tb)
     end
 end
 
