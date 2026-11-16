@@ -38,9 +38,8 @@ export default defineConfig({
 	outDir: 'REPLACE_ME_DOCUMENTER_VITEPRESS', // This is required for MarkdownVitepress to work correctly...
 	head: [
 		['link', { rel: 'icon', href: 'REPLACE_ME_DOCUMENTER_VITEPRESS_FAVICON' }],
-		// Served from GitHub Pages under /Targets.jl/; with a custom domain (deploy_url in
-		// make.jl), use `['script', { src: '/versions.js' }]` instead.
-		['script', { src: `${getBaseRepository(baseTemp.base)}versions.js` }],
+		// ['script', { src: `${getBaseRepository(baseTemp.base)}versions.js` }],
+		['script', { src: '/versions.js' }], // for custom domains, I guess if deploy_url is available.
 		['script', { src: `${baseTemp.base}siteinfo.js` }],
 		// REPLACE_ME_DOCUMENTER_VITEPRESS_NOINDEX
 	],

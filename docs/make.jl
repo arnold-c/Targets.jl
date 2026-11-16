@@ -10,7 +10,8 @@ makedocs(;
         repo = "github.com/arnold-c/Targets.jl",
         devbranch = "main",
         devurl = "dev",
-        # deploy_url = "https://targets.callumarnold.com", # with a custom domain (see config.mts)
+        # the site is served from the root of its own domain, not under /Targets.jl/
+        deploy_url = "https://targets.callumarnold.com",
     ),
     # internal docstrings (most of the package) are for developers, not the site
     checkdocs = :exports,
