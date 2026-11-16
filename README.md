@@ -7,7 +7,10 @@ A pipeline toolkit for Julia in the spirit of R's
 [`targets`](https://docs.ropensci.org/targets/). Declare an analysis as named
 **targets**, each produced by a function of upstream targets. Every result is cached
 (as a JLD2 file) and each run rebuilds only what changed: the code, the data
-flowing in, or the input files.
+flowing in, or the input files. Independent targets and branches can run in
+parallel, as Julia tasks or on `Distributed` worker processes.
+
+The full documentation is at <https://targets.callumarnold.com>.
 
 > **Name.** "Targets" is a working name. A different package called `Targets.jl`
 > is already in the General registry, so rename this one before registering.
@@ -51,6 +54,10 @@ expression binds itself (comprehension variables, lambda arguments, `let` and `d
 bindings) are not dependencies, and a name that is neither a target nor defined where the
 pipeline is written is an error that names its line. A target's own name means what it
 means outside the pipeline, so `@target summary = summary(fits)` calls `summary`.
+
+Each target name can be declared only once in a pipeline. Declaring a name twice, in the
+same block, in two fragments, or through names that `@map`, `tar_map` or `@rep` generate,
+is an error that gives the line of each declaration.
 
 ### Fragments, static branching and replication
 
@@ -145,7 +152,12 @@ A target is rebuilt when, in order:
 4. the **source of its function** changed (comments, whitespace and moving code do not count),
 5. the source of any **user function, type or global it reaches** changed (recursively, all methods),
 6. its dependencies changed, or
-7. an upstream value changed, or (for file targets) a file's contents changed.
+7. an upstream value changed, or (for file and URL targets) a file's contents or a URL
+   changed.
+
+A target's `cue` changes which of these rules apply: `:always`, `:never`,
+`Cue(code = false)` (ignore changes to the code it calls), `cue_age(Day(7))` or
+`cue_force(condition)`.
 
 A rebuilt target whose output is identical stops the change there: its consumers
 see an unchanged value hash and are not rebuilt (*early cutoff*).
@@ -171,12 +183,17 @@ packages that moved, and `track_manifest = true` rebuilds everything.
 ## Target kinds
 
 - **Values** (default): the result is stored with JLD2. Even constants are targets,
-  so changing a setting rebuilds exactly its consumers.
+  so changing a setting rebuilds exactly its consumers. `format` picks another
+  storage format: `:jls` (Julia's `Serialization`), or for tables `:arrow`
+  (`using Arrow`), `:parquet` (`using Parquet2`) or `:csv` (`using CSV`).
 - **File targets** (`format = :file`): the function returns a path, a vector of
   paths, or a directory. Contents decide: editing an input file rebuilds its
   consumers, touching it does not, and deleting an output rebuilds the target
   that wrote it. Consumers receive the path. Paths are relative to the project root,
   which is the working directory during a build.
+- **URL targets** (`format = :url`): the function returns one or more URLs, which are
+  checked with an HTTP `HEAD` request on every run (nothing is downloaded); consumers
+  rebuild when one changes. Offline, the last check is kept with a warning.
 - **Dynamic branching** (`pattern = :other`): the function runs once per element of
   the pattern target's vector. Branches are named by the hash of their element, so
   adding, removing or reordering elements rebuilds only the new ones, and a change to
@@ -228,7 +245,7 @@ parameters are not supported.
 
 ## Running builds
 
-`tar_make(; names, force, keep_going, fresh, ...)`:
+`tar_make(; names, force, keep_going, fresh, jobs, executor, ...)`:
 
 - `names = [:model]` builds those targets and everything they depend on; a `tar_map`
   template name stands for all of its targets.
@@ -236,6 +253,7 @@ parameters are not supported.
 - `keep_going = true` carries on with independent targets after a failure.
 - `fresh = true` builds in a new Julia process, so no stale session state can leak in
   (use it for final and CI runs).
+- `jobs = 4` (or `:auto`) runs independent targets and branches in parallel; see below.
 
 It returns a `BuildSummary` listing what was built, skipped, errored or blocked, and
 logs one line per finished target to the terminal and to `_targets/log/progress.log`:
@@ -253,6 +271,62 @@ If you edit a source file without Revise and without restarting, the session sti
 runs the old code while the files on disk have changed, so `tar_make` stops with an
 explanation rather than record the wrong hashes. Load Revise, restart, or use
 `fresh = true`.
+
+### Parallel builds
+
+With `jobs = n`, up to `n` independent targets and branches run at once, each as a
+Julia task; targets on the longest remaining path (by their last build times) start
+first. `jobs = :auto` is one job per thread of the default threadpool. `jobs` counts
+tasks, not threads: more jobs than threads still overlap targets that wait on I/O, but
+CPU-bound targets only run in parallel when Julia has threads (`julia -t 8`). The
+default is `1`, or the project's `jobs` preference (see below).
+
+```julia
+tar_make(jobs = 4)
+```
+
+Per-target options control how a target shares the jobs:
+
+- `slots = 2` (or `:all`) makes a target occupy several jobs while it runs, for targets
+  that are parallel themselves; `tar_slots()` returns how many it was given, e.g.
+  `OhMyThreads.tmap(f, xs; ntasks = tar_slots())`. Slots only decide what runs alongside
+  a target: they cannot stop it from using more threads.
+- `deployment = :main` runs a target in the task that called `tar_make`, never at the
+  same time as another `:main` target, for code that is not safe to run concurrently.
+
+Concurrent targets share the process: they must not `cd`, change `ENV`, or mutate their
+arguments (consumers of one upstream receive the same object).
+`tar_make(check_mutation = true)` checks the last of these, at a cost, so turn it on in
+tests and CI.
+
+To run targets on other processes or machines, pass a `DistributedExecutor`:
+
+```julia
+using Distributed
+addprocs(4)
+tar_make(executor = DistributedExecutor(workers()))
+```
+
+Each worker loads `_targets.jl` itself, and the store must be on a filesystem the workers
+share with the main process.
+
+### Errors, retries and seeds
+
+By default an error stops the build, after running jobs have finished, and is rethrown. A
+target's `error` option changes that: `:continue` blocks only its descendants, `:null` gives
+consumers `nothing`, and `:trim` (branching targets) leaves failed branches out of its
+value. `retries = n` (with `retry_delay`) reruns a failing target within one build. To
+investigate a failure, `tar_errored()` lists what failed, `tar_traceback(:model)` gives the
+stack frames of its last failure, `tar_workspace(:model)` (or `@tar_workspace model`) the
+arguments it failed with, and `tar_rerun(:model)` calls its current function on them.
+
+Every target runs with its own seed, derived from the pipeline seed and its name, so
+results are the same whatever the order or parallelism of the build. Set the pipeline
+seed with `@pipeline seed = 2026 begin ... end` or `tar_pipeline(...; seed = 2026)`;
+`tar_seed()` returns the running target's seed (e.g. `StableRNG(tar_seed())`).
+
+To follow a build from another session, `tar_progress()` gives the latest status of every
+target and branch, and `tar_poll()` prints a summary every few seconds until it finishes.
 
 ## Helpers
 
@@ -296,11 +370,14 @@ explanation rather than record the wrong hashes. Load Revise, restart, or use
   (`getfield(mod, sym)`), `@generated` functions, and several lambdas with identical
   arguments on one line (edits rebuild all of them). `cue = :always` and
   `tar_make(force = true)` cover these.
-- Parallel builds are not implemented yet; the build loop is structured so they
-  can be added.
+- With hundreds of targets, write `@pipeline`/`@targets` blocks at the top level of
+  `_targets.jl` (or files it `include`s), where they are split into one statement per
+  line, so loading the script stays fast. See
+  [Large pipelines](docs/src/guide/large_pipelines.md).
 
 ## Development
 
 Tests are `@testitem`s that live next to the code in `src/`, with Aqua and JET
 checks in `test/runtests.jl`. Run them with `juliati` (`juliati --filter ...` for
-one item or file). The design is described in [`plan.md`](plan.md).
+one item or file). The design is described in [`plan.md`](plan.md), the user guide
+lives in `docs/`, and runnable demos in [`examples/`](examples/README.md).
