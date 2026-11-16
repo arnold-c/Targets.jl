@@ -385,11 +385,14 @@ default_script() = joinpath(project_root(), "_targets.jl")
 "Load a pipeline script into a fresh module, so no state leaks from the REPL between runs."
 function load_pipeline(script::AbstractString)
     isfile(script) || error("no pipeline script at $script")
-    m = register_script!(script, Module(:TargetsScript))
+    # a bare module plus `using Base`: from Julia 1.15 a standard module already
+    # binds `include` and `eval`, so the definitions below could not replace them
+    m = register_script!(script, Module(:TargetsScript, false))
+    Core.eval(m, :(using Base))
     Core.eval(m, :(using Targets))
     # top-level `@pipeline`/`@targets` blocks run a line at a time: much faster to lower
     split = ex -> split_toplevel(m, ex)
-    # a plain Module has no `include`/`eval`, which scripts reasonably expect
+    # scripts reasonably expect `include`/`eval`; `include` also splits included files
     Core.eval(m, :(include(path::AbstractString) = Base.include($split, $m, path)))
     Core.eval(m, :(eval(ex) = Core.eval($m, ex)))
     p = Base.include(split, m, script)
