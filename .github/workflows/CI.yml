@@ -36,6 +36,19 @@ jobs:
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
+      # JET only supports Julia < 1.12 through versions that need CodeTracking 1,
+      # which conflicts with Targets' CodeTracking 3. The JET test item is skipped
+      # there anyway, so drop JET from the test environment to let it resolve.
+      - name: Drop JET from the test environment on Julia < 1.12
+        shell: julia --color=yes {0}
+        run: |
+          using TOML
+          if VERSION < v"1.12"
+              path = joinpath("test", "Project.toml")
+              project = TOML.parsefile(path)
+              foreach(section -> delete!(project[section], "JET"), ("deps", "compat"))
+              open(io -> TOML.print(io, project), path, "w")
+          end
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1

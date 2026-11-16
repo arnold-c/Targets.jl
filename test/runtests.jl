@@ -6,7 +6,8 @@ using TestItemRunner
 end
 
 # JET is tied to specific Julia versions, so only run it on stable releases
-# recent enough for the JET versions allowed in test/Project.toml.
+# recent enough for the JET versions allowed in test/Project.toml. CI removes
+# JET from the test environment on older Julia versions (see CI.yml).
 @testitem "Code linting (JET.jl)" tags = [:quality] begin
     if VERSION >= v"1.12" && isempty(VERSION.prerelease)
         using JET
