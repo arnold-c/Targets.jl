@@ -13,8 +13,8 @@ tar_make(fresh = true)              # build in a new Julia process
 
 - `names` takes target names; a [`tar_map`](@ref) template name stands for all of its
   targets.
-- `fresh = true` builds in a new Julia process, so no stale session state can leak in. Use
-  it for final and CI runs.
+- `fresh = true` builds in a new Julia process, so nothing from your session can affect
+  the results (see [Fresh builds](#Fresh-builds)). Use it for final and CI runs.
 - To see what a build would do without building, call [`tar_outdated`](@ref) with the same
   `names`.
 
@@ -33,53 +33,58 @@ use follows the width of the pipeline rather than its length.
     explanation rather than record the wrong hashes. Load Revise, restart, or use
     `fresh = true`.
 
+## Fresh builds
+
+`tar_make()` already loads `_targets.jl` into a new module on every call, so variables
+left over from an earlier load of the script cannot leak in. Everything else in your
+session is shared with the build, though, and some of it can change results without
+changing anything on disk:
+
+- **Packages are loaded once per session.** `using MyAnalysis` in `_targets.jl` reuses the
+  copy your session already loaded. Without Revise, edits made since then are not running.
+  `tar_make` notices edited files that its targets' code reaches, and stops (see the
+  warning above), but not every way session code can differ from the files.
+- **Session state.** Global variables you changed at the REPL
+  (`MyAnalysis.SETTINGS[:n] = 10`), methods you defined or overwrote there, the working
+  directory, `ENV` and settings such as `BLAS.set_num_threads` all affect the targets that
+  use them, but are not part of any hash.
+- **Packages the script does not load.** A package loaded in your session, but not by
+  `_targets.jl`, can still change what targets do, by adding methods or enabling a package
+  extension. The build then works in your session but not anywhere else.
+
+`tar_make(fresh = true)` avoids all three. It starts a new Julia process with the same
+project and the same number of default threads, without your `startup.jl` file, and runs
+`tar_make` there with the same options. The new process loads everything from the files on
+disk, so the results depend only on the project. Its log is printed as usual, and the
+[`BuildSummary`](@ref) is returned to your session. Values go to the same store, so
+`tar_read` in your session sees them.
+
+The price is starting Julia and loading and compiling your packages on every call, from
+seconds to minutes, so use it for final and CI runs rather than while iterating. It also
+needs the pipeline to come from a script (not a `Pipeline` value), and it cannot be
+combined with `executor`, since workers belong to the session that started them.
+
 ## Parallel builds
 
-With `jobs = n`, up to `n` independent targets and branches run at once, each as a Julia
-task. Targets on the longest remaining path (by their last build times) start first.
-
 ```julia
-tar_make(jobs = 4)
+tar_make(jobs = 4)                  # up to 4 targets and branches at once, as Julia tasks
 tar_make(jobs = :auto)              # one job per thread of the default threadpool
+tar_make(executor = DistributedExecutor(workers()))   # on worker processes
 ```
 
-`jobs` counts tasks, not threads: more jobs than threads still overlap targets that wait on
-I/O, but CPU-bound targets only run in parallel when Julia has threads (`julia -t 8`). Set
-a default for a project in `LocalPreferences.toml`:
-
-```toml
-[Targets]
-jobs = "auto"   # or a number such as 4
-```
-
-Per-target options control how a target shares the jobs:
-
-- `slots = 2` (or `:all`) makes a target occupy several of the `n` jobs while it runs, for
-  targets that are parallel themselves. [`tar_slots`](@ref) returns how many it was given,
-  e.g. `OhMyThreads.tmap(f, xs; ntasks = tar_slots())`.
-- `deployment = :main` runs a target in the task that called `tar_make`, never at the same
-  time as another `:main` target, for code that is not safe to run concurrently.
-
-Concurrent targets share the process: they must not `cd`, change `ENV`, or mutate their
-arguments. `tar_make(check_mutation = true)` checks the last of these, at a cost, so turn it
-on in tests and CI.
-
-To run targets on other processes or machines, pass a
-[`DistributedExecutor`](@ref) (with `using Distributed`):
-
-```julia
-using Distributed
-addprocs(4)
-tar_make(executor = DistributedExecutor(workers()))
-```
-
-Each worker loads `_targets.jl` itself, and the store must be on a filesystem the workers
-share with the main process.
+`jobs` counts tasks, not threads: CPU-bound targets only run in parallel when Julia has
+threads (`julia -t 8`). A target's `slots` option says how much of the build's capacity it
+occupies, and `deployment = :main` keeps a target in your session's task. [Parallel and
+distributed builds](parallel.md) explains how jobs, tasks, threads, slots and workers relate,
+and what targets must avoid when they run concurrently.
 
 ## Errors and retries
 
-By default an error stops the build, after running jobs have finished, and is rethrown. A
-target's `error` option changes what its failure does:
+By default an error stops the build: nothing new starts, jobs that are already running
+finish and are recorded, and then the error is rethrown. Interrupting a build (Ctrl-C)
+stops it the same way, except that results arriving after the interrupt are not recorded;
+running jobs cannot be killed, so interrupt again to stop waiting for them. A target's
+`error` option changes what its failure does:
 
 | `error` | A failure |
 | --- | --- |

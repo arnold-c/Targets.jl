@@ -251,8 +251,10 @@ parameters are not supported.
   template name stands for all of its targets.
 - `force = true` rebuilds the selection (or everything) whatever its status.
 - `keep_going = true` carries on with independent targets after a failure.
-- `fresh = true` builds in a new Julia process, so no stale session state can leak in
-  (use it for final and CI runs).
+- `fresh = true` builds in a new Julia process with the same project, so nothing from
+  your session (code loaded before you edited it, globals or methods changed at the REPL,
+  packages the script does not load) can affect the results. It costs a Julia start-up
+  and package load per call, so use it for final and CI runs.
 - `jobs = 4` (or `:auto`) runs independent targets and branches in parallel; see below.
 
 It returns a `BuildSummary` listing what was built, skipped, errored or blocked, and
@@ -308,7 +310,10 @@ tar_make(executor = DistributedExecutor(workers()))
 ```
 
 Each worker loads `_targets.jl` itself, and the store must be on a filesystem the workers
-share with the main process.
+share with the main process. [Parallel and distributed builds](docs/src/guide/parallel.md)
+explains how jobs, tasks, threads, slots and workers relate, and
+[Running on a Slurm cluster](docs/src/guide/slurm.md) how to use workers from a Slurm
+allocation with SlurmClusterManager.jl.
 
 ### Errors, retries and seeds
 

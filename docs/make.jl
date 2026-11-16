@@ -22,6 +22,8 @@ makedocs(;
             "Branching" => "guide/branching.md",
             "Kinds of targets" => "guide/target_kinds.md",
             "Running builds" => "guide/builds.md",
+            "Parallel and distributed builds" => "guide/parallel.md",
+            "Running on a Slurm cluster" => "guide/slurm.md",
             "What triggers a rebuild" => "guide/rebuilds.md",
             "Inspecting a pipeline" => "guide/inspecting.md",
             "Large pipelines" => "guide/large_pipelines.md",

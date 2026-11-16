@@ -77,7 +77,11 @@ tar_pipeline(
   several parameters.
 - [Kinds of targets](guide/target_kinds.md): values, storage formats, files, URLs and Quarto
   reports.
-- [Running builds](guide/builds.md): selecting targets, parallel jobs, errors and seeds.
+- [Running builds](guide/builds.md): selecting targets, fresh builds, errors and seeds.
+- [Parallel and distributed builds](guide/parallel.md): jobs, tasks, threads, slots and
+  worker processes, and how they fit together.
+- [Running on a Slurm cluster](guide/slurm.md): workers from a Slurm allocation, with
+  SlurmClusterManager.jl.
 - [What triggers a rebuild](guide/rebuilds.md): how changes are detected, and cues.
 - [Inspecting a pipeline](guide/inspecting.md): reading results and viewing the graph.
 - [Large pipelines](guide/large_pipelines.md): keeping loads and reads fast.
