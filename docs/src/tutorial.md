@@ -1,4 +1,4 @@
-# Tutorial: an example workflow
+# An example workflow
 
 This page walks through a small analysis from start to finish: a project with its own
 functions, a pipeline, a first build, a look at the graph, a code change, new data that
@@ -7,6 +7,20 @@ produced by running the code shown, in order, when the documentation was built.
 
 ```@setup tutorial
 using Markdown
+
+# The tutorial's project uses the documentation environment's packages, so they must be
+# installed. Load them here, so that a missing one stops the build with a clear message
+# instead of an error in the output of the first `@repl` block. Revise must also be loaded
+# before the tutorial's code, to track it.
+try
+    using CSV, CairoMakie, DataFrames, Revise
+catch err
+    error(
+        "the tutorial needs every package of the docs environment installed: run " *
+            "`import Pkg; Pkg.instantiate()` with `docs` active, then build again.\n" *
+            sprint(showerror, err),
+    )
+end
 
 # The documentation's environment; the tutorial's project uses the same packages.
 const DOCS_PROJECT = Base.active_project()
