@@ -183,17 +183,80 @@ function expand_for_refs(mod::Module, expr)
     end
 end
 
+"""
+    source_refs(mod, exprs)
+
+The globals source `exprs` written in `mod` may refer to, as `(module, name)`:
+the macros it calls and the names in its expanded code, without the names it
+only ever binds itself (see [`global_names`](@ref)).
+"""
+function source_refs(mod::Module, exprs)
+    refs = Tuple{Module, Symbol}[]
+    expanded = [expand_for_refs(mod, e) for e in exprs]
+    foreach(e -> collect_macro_refs!(refs, mod, e), exprs)
+    foreach(e -> collect_refs!(refs, mod, e), expanded)
+    globals = global_names(mod, vcat(exprs, expanded))
+    globals === nothing && return refs
+    return filter!(((owner, name),) -> owner !== mod || name in globals, refs)
+end
+
+"""
+    global_names(mod, exprs)
+
+The names `exprs` may use as globals of `mod`: those ExpressionExplorer finds
+free in any of them (so not arguments, locals, or comprehension and `do`
+variables), the functions they define, the macros they call, and every name
+they write after a dot or as a `GlobalRef` into `mod`. A name a function binds
+itself, such as an argument named like a global, is then not mistaken for that
+global. `nothing` if the analysis fails, which keeps every name.
+"""
+function global_names(mod::Module, exprs)
+    names = Set{Symbol}()
+    try
+        for e in exprs
+            explicit_names!(names, mod, e)
+            node = ExpressionExplorer.compute_reactive_node(without_globalrefs(e))
+            for s in Iterators.flatten((node.references, node.definitions, node.macrocalls))
+                union!(
+                    names,
+                    Symbol.(split(string(s), '.')),
+                ) # `Mod.f` also names `Mod` and `f`
+            end
+            for f in node.funcdefs_without_signatures
+                f isa Symbol ? push!(names, f) : union!(names, f)
+            end
+        end
+    catch e
+        e isa InterruptException && rethrow()
+        return nothing
+    end
+    return names
+end
+
+# Names written as `GlobalRef`s into `mod`, or after a dot (`Mod.name`, `x.field`).
+explicit_names!(names, mod::Module, x::GlobalRef) = x.mod === mod ?
+    push!(names, x.name) :
+    names
+function explicit_names!(names, mod::Module, x::Expr)
+    x.head == :. &&
+        length(x.args) == 2 &&
+        x.args[2] isa QuoteNode &&
+        x.args[2].value isa Symbol &&
+        push!(names, x.args[2].value)
+    foreach(a -> explicit_names!(names, mod, a), x.args)
+    return names
+end
+explicit_names!(names, ::Module, _) = names
+
+without_globalrefs(::GlobalRef) = nothing
+without_globalrefs(x::Expr) = Expr(x.head, map(without_globalrefs, x.args)...)
+without_globalrefs(x) = x
+
 function method_info(d::Discovery, m::Method)
     get!(d.infos, m) do
-        refs = Tuple{Module, Symbol}[]
         exprs = method_source(m)
-        if exprs !== nothing
-            for e in exprs
-                collect_macro_refs!(refs, m.module, e)
-                collect_refs!(refs, m.module, expand_for_refs(m.module, e))
-            end
-            return MethodInfo(method_hash(m), refs)
-        end
+        exprs === nothing || return MethodInfo(method_hash(m), source_refs(m.module, exprs))
+        refs = Tuple{Module, Symbol}[]
         lowered = lowered_source(m)
         lowered === nothing || collect_lowered_refs!(refs, lowered[1])
         return MethodInfo(method_hash(m), refs)
@@ -329,10 +392,7 @@ end
 start_walk!(w::Walk, r::RepCommand, source) = start_walk!(w, r.command, source)
 function start_walk!(w::Walk, c::MacroCommand, source)
     foreach(m -> push!(w.d.files, String(m.file)), methods(c.body))
-    refs = Tuple{Module, Symbol}[]
-    collect_macro_refs!(refs, c.mod, source)
-    collect_refs!(refs, c.mod, expand_for_refs(c.mod, source))
-    for (mod, name) in refs
+    for (mod, name) in source_refs(c.mod, [source])
         # names the target takes as dependencies or from its scope: see below
         (mod === c.mod && name in c.refs) || consider_binding!(w, mod, name)
     end
@@ -553,6 +613,44 @@ end
     """,
     )[1]
     @test qualified("x * 2") != qualified("x * 3")
+end
+
+@testitem "code_hash ignores names a function binds itself, even if a global shares them" setup = [
+    CodeFixtures,
+] begin
+    code(global_x, helpers) = reach(
+        "x = $global_x\n$helpers\nt = target(:a, () -> g(2))",
+    )[1]
+    # arguments, locals, comprehension and `do` variables named like the global `x`
+    shadowing = """
+    inner(v) = map([1, 2]) do x
+        x + v
+    end
+    g(x) = (y = [x for x in 1:x]; x + sum(y) + sum(inner(x)))
+    """
+    @test code(1, shadowing) == code(2, shadowing)
+    # a function that does read the global is still tracked
+    reading = "g(y) = y + x"
+    @test code(1, reading) != code(2, reading)
+    # so are names a macro hides from the unexpanded source
+    macro_reading = "g(y) = @show(y + x)"
+    @test code(1, macro_reading) != code(2, macro_reading)
+end
+
+@testitem "a target named like its upstream's variable keeps early cutoff" setup = [
+    SourceFixtures,
+] begin
+    code(body) = """
+    step(x, i) = x + i
+    a = target(:a, () -> $body)
+    b = target(:b, a -> step(a, 0))
+    p = tar_pipeline([a, b])
+    """
+    mktempdir() do dir
+        build_source(code("1"), dir)
+        # new code for `a`, same value: `b` must not rebuild because the global `a` changed
+        @test build_source(code("0 + 1"), dir).built == [:a]
+    end
 end
 
 @testitem "code_hash tracks user globals and types but not Base" setup = [
