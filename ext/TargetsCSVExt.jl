@@ -14,6 +14,11 @@ Targets.write_value(f::CSVFormat, path::AbstractString, value) = CSV.write(
 )
 
 # Reads detect the delimiter: the recorded format name does not carry the options.
-Targets.read_value(::CSVFormat, path::AbstractString) = CSV.File(path)
+# A row of a one-column table that holds `missing` is written as an empty line,
+# which CSV.jl would otherwise skip.
+Targets.read_value(::CSVFormat, path::AbstractString) = CSV.File(
+    path;
+    ignoreemptyrows = false,
+)
 
 end

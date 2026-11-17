@@ -175,6 +175,17 @@ recorded_format(name::AbstractString) = resolve_format(Symbol(name))
     end
 end
 
+@testitem "CSV keeps the missing values of a one-column table" begin
+    using CSV, DataFrames
+    using Targets: open_store, write_object, read_object, CSVFormat
+    s = open_store(joinpath(mktempdir(), "_targets"))
+    for column in ([1, missing, 1], [-3, -3, missing], [missing])
+        df = DataFrame(c1 = column) # each missing is written as an empty line
+        write_object(s, "t", df; format = CSVFormat())
+        @test isequal(DataFrame(read_object(s, "t")), df)
+    end
+end
+
 @testitem "table formats round-trip and write identical bytes for identical tables" setup = [
     JETChecks,
 ] begin
