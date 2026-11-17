@@ -996,26 +996,15 @@ end
     end
 end
 
-# A tiny deterministic generator, so that failures are reproducible.
-@testmodule MiniRandom begin
-    export Gen, draw!
-    mutable struct Gen
-        state::UInt64
-    end
-    "A uniform integer in 1:n."
-    function draw!(g::Gen, n::Integer)
-        g.state = g.state * 6364136223846793005 + 1442695040888963407
-        return Int((g.state >> 33) % n) + 1
-    end
-end
-
 @testitem "oracle: incremental builds always equal a clean build" setup = [
     SourceFixtures,
-    MiniRandom,
 ] begin
+    using Supposition: Supposition, Data, @check, @composed
+    using Random: Xoshiro
     # A target is a small integer function of its dependencies. Random edits change
     # a coefficient, the shared modulus, or only the formatting or operand order,
     # so some edits change outputs, some change code only, and some change nothing.
+    # Supposition shrinks a failure to a smallest pipeline and list of edits.
     function render(spec)
         lines = [
             "const MODULUS = $(spec.modulus)",
@@ -1032,52 +1021,81 @@ end
         push!(lines, ")")
         return join(lines, "\n") * "\n"
     end
+    # Vectors of `n` values of `gen`, with `n` uniform in `1:most` (`Data.Vectors`
+    # favours short ones). `n` is drawn after the values, so it shrinks on its own.
+    sized(gen, most) = map(
+        (xs, n) -> xs[1:n],
+        Data.Vectors(gen; min_size = most, max_size = most),
+        Data.Integers(1, most),
+    )
+    job_counts = Data.SampledFrom([1, 4])
+
     Target3 = NamedTuple{(:deps, :a, :b, :swap), Tuple{Vector{Int}, Int, Int, Bool}}
-    function random_spec(g)
-        n = 3 + draw!(g, 3)
-        ts = [
-            Target3((
-                sort(unique([draw!(g, i - 1) for _ in 1:(i == 1 ? 0 : draw!(g, 2))])),
-                draw!(g, 50),
-                draw!(g, 9),
-                false,
-            ))
-            for i in 1:n
+    # dependencies are drawn as how far back they are, so pipelines are acyclic
+    raw_target = @composed (
+        back = Data.Vectors(Data.Integers(1, 5); max_size = 2),
+        a = Data.Integers(1, 50),
+        b = Data.Integers(1, 9),
+    ) -> (; back, a, b)
+    specs = map(sized(raw_target, 6), Data.Integers(1001, 1050)) do raws, modulus
+        targets = [
+            Target3((sort(unique(i - k for k in r.back if k < i)), r.a, r.b, false))
+            for (i, r) in enumerate(raws)
         ]
-        return (modulus = 1000 + draw!(g, 50), noise = "", targets = ts)
+        return (; modulus, noise = "", targets)
     end
-    function edit(spec, g)
-        i = draw!(g, length(spec.targets))
+
+    # an edit of the pipeline, then a build with `jobs`
+    edits = @composed (
+        kind = Data.Integers(1, 5),
+        target = Data.Integers(1, 6),
+        value = Data.Integers(1, 1000),
+        jobs = job_counts,
+    ) -> (; kind, target, value, jobs)
+    function apply_edit(spec, e)
+        i = mod1(e.target, length(spec.targets))
         t = spec.targets[i]
-        kind = draw!(g, 5)
         targets = copy(spec.targets)
-        if kind == 1
-            targets[i] = merge(t, (a = draw!(g, 50),))
-        elseif kind == 2
-            targets[i] = merge(t, (b = draw!(g, 9),))
-        elseif kind == 3
+        if e.kind == 1
+            targets[i] = merge(t, (a = mod1(e.value, 50),))
+        elseif e.kind == 2
+            targets[i] = merge(t, (b = mod1(e.value, 9),))
+        elseif e.kind == 3
             targets[i] = merge(t, (swap = !t.swap,)) # same value, different code
         end
-        modulus = kind == 4 ? 1000 + draw!(g, 50) : spec.modulus
-        noise = kind == 5 ? "# edit $(draw!(g, 1000))" : spec.noise # comment only
+        modulus = e.kind == 4 ? 1000 + mod1(e.value, 50) : spec.modulus
+        noise = e.kind == 5 ? "# edit $(e.value)" : spec.noise # comment only
         return (; modulus, noise, targets)
     end
 
-    for seed in 1:4
-        g = Gen(UInt64(seed))
-        spec = random_spec(g)
+    "Build `spec` into `dir`: is nothing left outdated, with the values of a clean build?"
+    function agrees_with_clean(spec, dir; jobs)
+        code = render(spec)
+        build_source(code, dir; jobs)
+        isempty(outdated_source(code, dir)) || return false
+        clean = mktempdir()
+        build_source(code, clean)
         names = [Symbol("t$i") for i in eachindex(spec.targets)]
-        incremental = mktempdir()
-        for step in 1:12
-            code = render(spec)
-            build_source(code, incremental; jobs = isodd(step) ? 1 : 4)
-            @test isempty(outdated_source(code, incremental))
-            clean = mktempdir()
-            build_source(code, clean)
-            @test read_values(incremental, names...) == read_values(clean, names...)
-            spec = edit(spec, g)
-        end
+        return read_values(dir, names...) == read_values(clean, names...)
     end
+
+    # A fixed seed, so every run tries the same examples; change it to explore others.
+    # The report is checked here rather than recorded: the test item runner finishes
+    # its test set in a world that predates `using Supposition`, so it counts none.
+    report = @check max_examples = 8 db = false record = false rng = Xoshiro(1) function incremental_equals_clean(
+        spec = specs,
+        steps = sized(edits, 12),
+        jobs = job_counts,
+    )
+        dir = mktempdir()
+        agrees_with_clean(spec, dir; jobs) || return false
+        for e in steps
+            spec = apply_edit(spec, e)
+            agrees_with_clean(spec, dir; jobs = e.jobs) || return false
+        end
+        return true
+    end
+    @test Supposition.results(report).ispass
 end
 
 @testitem "values are dropped from memory once their last consumer has run" setup = [
