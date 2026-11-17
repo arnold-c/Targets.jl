@@ -1086,7 +1086,7 @@ end
         end
         return true
     end
-    @test passed(report)
+    @test check_result(report).holds
 end
 
 @testitem "values are dropped from memory once their last consumer has run" setup = [

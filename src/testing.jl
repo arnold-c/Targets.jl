@@ -47,14 +47,14 @@ end
 @testmodule Properties begin
     using Supposition: Supposition, Data, @check, @composed
     using Random: Xoshiro
-    export Data, @check, @composed, check_config, passed, sized
+    export Data, @check, @composed, check_config, check_result, sized
 
     """
         check_config(; max_examples, seed = 1)
 
     Options for `@check config = ...`: a fixed seed, so every run tries the same
     examples (change it to explore others), and no example database in the repo.
-    The report is not recorded in the test set: check it with [`passed`](@ref).
+    The report is not recorded in the test set: check it with [`check_result`](@ref).
     """
     check_config(; max_examples::Int, seed = 1) = Supposition.CheckConfig(;
         rng = Xoshiro(seed),
@@ -64,14 +64,16 @@ end
     )
 
     """
-        passed(report)
+        check_result(report)
 
-    Whether the property `@check` returned `report` for held. Assert it with
-    `@test`: the test item runner finishes its test set in a world that predates
-    `using Supposition`, so a recorded report would count as no tests, and its
-    failures would pass silently.
+    `holds`: whether the property `@check` returned `report` for held. Assert it
+    with `@test check_result(report).holds`: the test item runner finishes its test
+    set in a world that predates `using Supposition`, so a recorded report would
+    count as no tests, and its failures would pass silently. (A field, rather than
+    a call, keeps `@test` from printing the whole report; `@check` has already
+    printed the counterexample.)
     """
-    passed(report) = Supposition.results(report).ispass
+    check_result(report) = (; holds = Supposition.results(report).ispass)
 
     """
         sized(gen, most)
