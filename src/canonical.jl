@@ -190,6 +190,76 @@ end
     ))
 end
 
+@testitem "property: canonical hash identifies values up to the order of unordered collections" setup = [
+    Properties,
+] begin
+    using Targets: canonical_hash
+
+    # Small domains, so that equal values are drawn often. Containers hold `Any`,
+    # so their types depend only on their kind and shape.
+    scalars = Data.OneOf(
+        Data.Integers(-2, 2),
+        map(Int32, Data.Integers(-2, 2)),
+        Data.SampledFrom([0.0, -0.0, 0.5, 1.0, Inf]),
+        Data.Booleans(),
+        Data.SampledFrom(["", "a", "ab", "b"]),
+        Data.SampledFrom([:a, :ab, :b]),
+        Data.SampledFrom(['a', 'b']),
+        Data.Just(nothing),
+        Data.Just(missing),
+    )
+    few(v) = Data.Vectors(v; max_size = 3)
+    extend(v) = Data.OneOf(
+        map(xs -> Any[xs...], few(v)),
+        map(xs -> reshape(Any[xs; xs], 2, :), Data.Vectors(v; min_size = 1, max_size = 2)),
+        map(xs -> (xs...,), few(v)),
+        map(xs -> NamedTuple{Tuple(Symbol.(:k, eachindex(xs)))}(Tuple(xs)), few(v)),
+        map(Pair, v, v),
+        map(xs -> Dict{Any, Any}(xs), Data.Vectors(Data.Pairs(v, v); max_size = 3)),
+        map(xs -> Set{Any}(xs), few(v)),
+        map((h, xs) -> Expr(h, xs...), Data.SampledFrom([:call, :tuple]), few(v)),
+    )
+    values = Data.recursive(extend, scalars; max_layers = 3)
+
+    "Whether `x` and `y` have the same types and values throughout, in any order inside dicts and sets."
+    same(x, y) = typeof(x) == typeof(y) && same_parts(x, y)
+    same_parts(x, y) = isequal(x, y)
+    same_parts(x::AbstractArray, y) = size(x) == size(y) && all(same.(x, y))
+    same_parts(x::Union{Tuple, NamedTuple}, y) = all(same.(Tuple(x), Tuple(y)))
+    same_parts(x::Pair, y) = same(x.first, y.first) && same(x.second, y.second)
+    same_parts(x::Expr, y) = x.head === y.head &&
+        same_parts(filter(a -> !(a isa LineNumberNode), x.args), filter(a -> !(a isa LineNumberNode), y.args))
+    same_parts(x::Union{AbstractDict, AbstractSet}, y) = length(x) == length(y) &&
+        all(a -> any(b -> same(a, b), y), x)
+
+    "`x` with `g` applied to its parts; dicts and sets are refilled in reverse order."
+    map_parts(g, x) = x
+    map_parts(g, x::Array{Any}) = reshape(Any[g(a) for a in x], size(x))
+    map_parts(g, x::Union{Tuple, NamedTuple}) = map(g, x)
+    map_parts(g, x::Pair) = g(x.first) => g(x.second)
+    map_parts(g, x::Dict{Any, Any}) = Dict{Any, Any}(g(k) => g(v) for (k, v) in reverse(collect(x)))
+    map_parts(g, x::Set{Any}) = Set{Any}(g(a) for a in reverse(collect(x)))
+    map_parts(g, x::Expr) = Expr(x.head, map(g, x.args)...)
+    reordered(x) = map_parts(reordered, x)
+    function with_line_numbers(x)
+        y = map_parts(with_line_numbers, x)
+        y isa Expr || return y
+        return Expr(y.head, (a for arg in y.args for a in (LineNumberNode(7, :here), arg))...)
+    end
+
+    report = @check config = check_config(; max_examples = 1000) function hash_identifies_values(
+        x = values,
+        y = values,
+    )
+        h = canonical_hash(x)
+        h == canonical_hash(deepcopy(x)) || return false
+        h == canonical_hash(reordered(x)) || return false
+        h == canonical_hash(with_line_numbers(x)) || return false
+        return (h == canonical_hash(y)) == same(x, y)
+    end
+    @test check_result(report).holds
+end
+
 @testitem "canonical hash of expressions ignores line numbers and formatting" begin
     using Targets: canonical_hash
     a = Meta.parse("function f(x)\n    # comment\n    x + 1\nend")

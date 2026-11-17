@@ -206,7 +206,7 @@ end
 end
 
 @testitem "property: pattern combinators follow their laws" setup = [Properties] begin
-    using Targets: select_combinations, PatternElement, pattern_names, map_names
+    using Targets: select_combinations, PatternElement, Pick, pattern_names, map_names
 
     # Nested patterns over the targets :a, :b and :c (Cross takes two parts at
     # most, so trees stay small).
@@ -235,8 +235,19 @@ end
         any(isnothing, s) && return nothing
         p isa Map && return allequal(s) ? first(s) : nothing
         p isa Cross && return prod(s)
-        p isa Slice && return all(i -> 1 <= i <= only(s), p.indices) ? length(p.indices) : nothing
+        p isa Slice &&
+            return all(i -> 1 <= i <= only(s), p.indices) ? length(p.indices) : nothing
         return min(only(s), p.n) # Head, Sample
+    end
+
+    "Whether `xs` is `ys` with some elements left out (in order)."
+    function subsequence(xs, ys)
+        j = 0
+        for x in xs
+            j = something(findnext(==(x), ys, j + 1), 0)
+            j == 0 && return false
+        end
+        return true
     end
 
     throws(f) = try
@@ -251,14 +262,14 @@ end
         combos = select(p)
         p isa Head && return combos == select(p.part)[1:min(p.n, end)]
         p isa Slice && return combos == select(p.part)[p.indices]
-        if p isa Sample # distinct elements of the part, in its order, the same each time
-            positions = indexin(combos, select(p.part))
-            return issorted(positions; lt = <=) && combos == select(p)
-        end
+        # distinct elements of the part, in its order, the same each time
+        p isa Sample && return subsequence(combos, select(p.part)) && combos == select(p)
         return true
     end
 
-    report = @check config = check_config(; max_examples = 300) function patterns_follow_their_laws(
+    report = @check config = check_config(;
+        max_examples = 300,
+    ) function patterns_follow_their_laws(
         p = patterns,
         q = patterns,
         r = patterns,
@@ -273,7 +284,8 @@ end
             expected === nothing && (throws(() -> select(x)) ? continue : return false)
             combos = select(x)
             length(combos) == expected || return false
-            for c in combos # one pick per leaf, each the element at its index
+            for c in combos
+                # one pick per leaf, each the element at its index
                 [pick.name for pick in c] == leaves(x) || return false
                 all(pick -> pick.element == elements(pick.name)[pick.index], c) ||
                     return false
@@ -281,25 +293,28 @@ end
             node_lawful(x, select) || return false
         end
         # one part is the part itself, and nesting does not matter
-        same(a, b) = (size_of(a, n) === nothing) ? throws(() -> select(b)) :
+        same(a, b) = (size_of(a, n) === nothing) ?
+            throws(() -> select(b)) :
             select(a) == select(b)
         all((
             same(p, Map(p)),
             same(p, Cross(p)),
-            same(Cross(p, q, r), Cross(Cross(p, q), r)),
-            same(Cross(p, q, r), Cross(p, Cross(q, r))),
             same(Map(p, q, r), Map(Map(p, q), r)),
             same(Map(p, q, r), Map(p, Map(q, r))),
         )) || return false
+        if something(size_of(Cross(p, q, r), n), 0) <= 1000 # products grow fast
+            same(Cross(p, q, r), Cross(Cross(p, q), r)) || return false
+            same(Cross(p, q, r), Cross(p, Cross(q, r))) || return false
+        end
         # names are the leaves' in order, and renaming commutes with selecting
         pattern_names(p) == unique(leaves(p)) || return false
         renamed = map_names(x -> Symbol(x, :_x), p)
         map_names(x -> Symbol(chop(String(x); tail = 2)), renamed) == p || return false
         size_of(p, n) === nothing && return true
         unrenamed(name) = elements(Symbol(chop(String(name); tail = 2)))
-        renamed_picks = select_combinations(renamed, unrenamed, seed)
-        return [[Symbol(x.name, :_x) for x in c] for c in select(p)] ==
-            [[x.name for x in c] for c in renamed_picks]
+        rename(x) = Pick(Symbol(x.name, :_x), x.index, x.element)
+        return map(c -> map(rename, c), select(p)) ==
+            select_combinations(renamed, unrenamed, seed)
     end
     @test check_result(report).holds
 end
