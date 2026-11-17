@@ -404,6 +404,45 @@ end
     end
 end
 
+@testitem "property: every record reads back as it was written" setup = [Properties] begin
+    using Targets: open_store, write_meta, read_meta, Record
+
+    # Any field values a record can hold, of the types its fields declare: text
+    # with any valid characters, floats but NaN (which equals nothing), and the
+    # TOML values format options hold.
+    text = Data.Text(Data.Characters(; valid = true); max_len = 6)
+    function field_values(::Type{T}) where {T}
+        T === String && return text
+        T === Float64 && return Data.Floats{Float64}(; nans = false)
+        T === Bool && return Data.Booleans()
+        T === Vector{String} && return Data.Vectors(text; max_size = 3)
+        T === Dict{String, String} && return Data.Dicts(text, text; max_size = 3)
+        T === Dict{String, Any} &&
+            return map(
+                Dict{String, Any},
+                Data.Dicts(
+                    text,
+                    Data.OneOf(text, Data.Integers{Int}(), Data.Booleans());
+                    max_size = 3,
+                ),
+            )
+        error("no values for record fields of type $T")
+    end
+    records = map(
+        (values...) -> Record(; zip(fieldnames(Record), values)...),
+        (field_values(T) for T in fieldtypes(Record))...
+    )
+
+    s = open_store(joinpath(mktempdir(), "_targets"))
+    report = @check config = check_config(;
+        max_examples = 300,
+    ) rng = property_rng() function records_round_trip(r = records)
+        write_meta(s, "k", r)
+        return read_meta(s, "k") == r
+    end
+    @test check_result(report).holds
+end
+
 @testitem "metadata round-trips and tar_meta assembles a table" setup = [JETChecks] begin
     using Targets:
         open_store,
