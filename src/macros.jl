@@ -1509,6 +1509,102 @@ end
     end
 end
 
+@testitem "property: a block run a line at a time declares what the macro does" setup = [
+    Properties,
+] begin
+    using Targets:
+        split_toplevel,
+        load_pipeline,
+        command_hash,
+        code_hash,
+        Discovery,
+        user_roots
+
+    # A line of a `@pipeline` block: a target, a variable, a variable assigned
+    # again (which keeps the block from being split) or a `@map`. Lines refer to
+    # targets and variables of earlier lines, picked by `refs`.
+    line = @composed (
+        kind = Data.SampledFrom([
+            :target,
+            :target,
+            :target,
+            :variable,
+            :variable,
+            :map,
+            :reassign,
+        ]),
+        refs = Data.Vectors(Data.Integers(1, 9); max_size = 3),
+        literal = Data.Integers(1, 9),
+        calls = Data.Booleans(),
+        always = Data.Booleans(),
+    ) -> (; kind, refs, literal, calls, always)
+
+    pick(pool, refs) = isempty(pool) ?
+        String[] :
+        unique(pool[mod1(r, length(pool))] for r in refs)
+    "The script, the dependencies each plain target should have, and whether any variable is assigned again."
+    function render(lines)
+        targets, variables = ["base"], String[]
+        code, deps, reassigned = ["    @target base = 1"], Dict(:base => Symbol[]), false
+        for (i, l) in enumerate(lines)
+            if l.kind === :target
+                used = pick([targets; variables], l.refs)
+                expr = join([used; string(l.literal)], " + ")
+                l.calls && (expr = "step($expr, $(l.literal))")
+                push!(code, "    @target t$i = $expr" * (l.always ? " cue = :always" : ""))
+                deps[Symbol(:t, i)] = Symbol.(filter(in(targets), used))
+                push!(targets, "t$i")
+            elseif l.kind === :map
+                over = first(pick(targets, l.refs), 1)
+                push!(
+                    code,
+                    "    @map((low = $(l.literal), high = $(l.literal + 1))) do k",
+                    "        @target t$i = step($(join([over; "0"], " + ")), k)",
+                    "    end",
+                )
+            elseif l.kind === :reassign && !isempty(variables)
+                v = only(pick(variables, [l.literal]))
+                push!(code, "    $v = $v + $(l.literal)")
+                reassigned = true
+            else
+                push!(
+                    code,
+                    "    v$i = " *
+                        join([pick(variables, l.refs); string(l.literal)], " + "),
+                )
+                push!(variables, "v$i")
+            end
+        end
+        script = "step(x, i) = x + i\np = @pipeline begin\n" * join(code, "\n") * "\nend\n"
+        return script, deps, reassigned
+    end
+
+    "Each target's name, dependencies, command hash and code hash."
+    describe(p, dir) = (
+        d = Discovery(user_roots(dir, p.track));
+        [(t.name, t.deps, command_hash(t).hash, code_hash(d, t)) for t in p.targets]
+    )
+
+    report = @check config = check_config(;
+        max_examples = 60,
+    ) rng = property_rng() function split_blocks_declare_the_same(lines = sized(line, 6))
+        script, deps, reassigned = render(lines)
+        dir = mktempdir()
+        path = joinpath(dir, "_targets.jl")
+        write(path, script)
+        # the same module name as `load_pipeline`'s, which code hashes record
+        m = Module(:TargetsScript)
+        Core.eval(m, :(using Targets))
+        whole = Base.include(m, path)
+        split = load_pipeline(path)
+        statement = last(filter(x -> !(x isa LineNumberNode), Meta.parseall(script).args))
+        Meta.isexpr(split_toplevel(m, statement), :toplevel) == !reassigned || return false
+        describe(split, dir) == describe(whole, dir) || return false
+        return all(n -> Set(Targets.get_target(split, n).deps) == Set(deps[n]), keys(deps))
+    end
+    @test check_result(report).holds
+end
+
 @testitem "blocks whose variables a line at a time would change are not split" begin
     using Targets: split_toplevel, load_pipeline
     m = Module()
