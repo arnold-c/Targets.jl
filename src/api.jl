@@ -48,7 +48,7 @@ macro tar_load(args...)
     options = Expr[]
     while !isempty(names) &&
             Meta.isexpr(names[1], :(=)) &&
-            names[1].args[1] in (:store, :script, :on_outdated)
+            is_option(names[1].args[1], (:store, :script, :on_outdated))
         opt = popfirst!(names)
         push!(options, Expr(:kw, opt.args[1], esc(opt.args[2])))
     end

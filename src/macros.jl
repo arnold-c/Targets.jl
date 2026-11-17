@@ -173,6 +173,12 @@ const TARGET_OPTIONS = (
 const REP_OPTIONS = (:batches, :reps, filter(!=(:pattern), TARGET_OPTIONS)...)
 const PIPELINE_OPTIONS = (:track, :seed)
 
+# Dispatch: `in` compares with `==`, which inference allows to be `missing` for
+# the untyped left side of an option
+"Whether `key`, the left side of an option `key = value`, is one of `allowed`."
+is_option(key::Symbol, allowed) = key in allowed
+is_option(_, allowed) = false
+
 function parse_target_line(ex, line::LineNumberNode; kind::Symbol = :target)
     args = Any[a for a in ex.args[3:end] if !(a isa LineNumberNode)]
     (!isempty(args) && Meta.isexpr(args[1], :(=)) && args[1].args[1] isa Symbol) ||
@@ -181,7 +187,7 @@ function parse_target_line(ex, line::LineNumberNode; kind::Symbol = :target)
     allowed = kind === :rep ? REP_OPTIONS : TARGET_OPTIONS
     options = Pair{Symbol, Any}[]
     for opt in args[2:end]
-        (Meta.isexpr(opt, :(=)) && opt.args[1] in allowed) ||
+        (Meta.isexpr(opt, :(=)) && is_option(opt.args[1], allowed)) ||
             error(
                 location_prefix(line) *
                     "in `@$kind $name`, expected an option like " *
@@ -582,7 +588,7 @@ end
 pipeline_keywords(options) = Expr(
     :parameters,
     map(options) do opt
-        (Meta.isexpr(opt, :(=)) && opt.args[1] in PIPELINE_OPTIONS) ||
+        (Meta.isexpr(opt, :(=)) && is_option(opt.args[1], PIPELINE_OPTIONS)) ||
             error(
                 "@pipeline accepts only `track = [...]` and `seed = ...` options before its block, got `$opt`",
             )
