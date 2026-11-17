@@ -1003,6 +1003,9 @@ end
     # A target is a small integer function of its dependencies. Random edits change
     # a coefficient, the shared modulus, or only the formatting or operand order,
     # so some edits change outputs, some change code only, and some change nothing.
+    # Two vectors built from t1 are mapped over by branching targets (`m` over
+    # v1, `x` over both crossed, `h` over the first two of v2), which `total` sums;
+    # edits also grow, shrink or shift the vectors and change the branches' code.
     # Supposition shrinks a failure to a smallest pipeline and list of edits.
     function render(spec)
         lines = [
@@ -1017,9 +1020,27 @@ end
             t.swap && (terms = reverse(terms))
             push!(lines, "    target(:t$i, ($args) -> wrap($(join(terms, " + ")))),")
         end
-        push!(lines, ")")
+        (; len1, len2, off1, off2, c1, c2, c3) = spec.branching
+        append!(
+            lines,
+            [
+                "    target(:v1, t1 -> [wrap(t1 + $off1 + k) for k in 1:$len1]),",
+                "    target(:v2, t1 -> [wrap(t1 + $off2 + k) for k in 1:$len2]),",
+                "    target(:m, v1 -> wrap($c1 * v1); pattern = :v1),",
+                "    target(:x, (v1, v2) -> wrap($c2 * v1 + v2); pattern = Cross(:v1, :v2)),",
+                "    target(:h, v2 -> wrap(v2 + $c3); pattern = Head(:v2, 2)),",
+                "    target(:total, (m, x, h) -> wrap(sum(m) + sum(x) + sum(h))),",
+                ")",
+            ],
+        )
         return join(lines, "\n") * "\n"
     end
+    branch_fields = (:len1, :len2, :off1, :off2, :c1, :c2, :c3)
+    branch_bounds = (len1 = 4, len2 = 4, off1 = 50, off2 = 50, c1 = 9, c2 = 9, c3 = 9)
+    branching = map(
+        (vs...) -> NamedTuple{branch_fields}(vs),
+        (Data.Integers(1, branch_bounds[f]) for f in branch_fields)...
+    )
     job_counts = Data.SampledFrom([1, 4])
 
     Target3 = NamedTuple{(:deps, :a, :b, :swap), Tuple{Vector{Int}, Int, Int, Bool}}
@@ -1029,18 +1050,22 @@ end
         a = Data.Integers(1, 50),
         b = Data.Integers(1, 9),
     ) -> (; back, a, b)
-    specs = map(sized(raw_target, 6), Data.Integers(1001, 1050)) do raws, modulus
+    specs = map(
+        sized(raw_target, 6),
+        Data.Integers(1001, 1050),
+        branching,
+    ) do raws, modulus, branching
         targets = [
             Target3((sort(unique(i - k for k in r.back if k < i)), r.a, r.b, false))
             for (i, r) in enumerate(raws)
         ]
-        return (; modulus, noise = "", targets)
+        return (; modulus, noise = "", targets, branching)
     end
 
     # an edit of the pipeline, then a build with `jobs`
     edits = @composed (
-        kind = Data.Integers(1, 5),
-        target = Data.Integers(1, 6),
+        kind = Data.Integers(1, 6),
+        target = Data.Integers(1, 7),
         value = Data.Integers(1, 1000),
         jobs = job_counts,
     ) -> (; kind, target, value, jobs)
@@ -1057,17 +1082,53 @@ end
         end
         modulus = e.kind == 4 ? 1000 + mod1(e.value, 50) : spec.modulus
         noise = e.kind == 5 ? "# edit $(e.value)" : spec.noise # comment only
-        return (; modulus, noise, targets)
+        branching = spec.branching
+        if e.kind == 6
+            field = branch_fields[mod1(e.target, length(branch_fields))]
+            branching = merge(branching, (field => mod1(e.value, branch_bounds[field]),))
+        end
+        return (; modulus, noise, targets, branching)
     end
 
-    "Build `spec` into `dir`: is nothing left outdated, with the values of a clean build?"
-    function agrees_with_clean(spec, dir; jobs)
+    # the combinations of element values each branching target maps over
+    function combinations(dir)
+        v1, v2 = read_values(dir, :v1, :v2)
+        return (m = Set(v1), x = Set((a, b) for a in v1 for b in v2), h = Set(first(v2, 2)))
+    end
+    coefficient = (m = :c1, x = :c2, h = :c3)
+
+    """
+    Build `spec` into `dir`, where `previous` was built last (or `nothing`). The
+    build matches `tar_outdated`'s prediction, which may only overstate targets
+    downstream of an outdated one; it builds just the branches whose combination
+    of elements is new, or all of a target's branches if its code changed; it
+    leaves nothing outdated; and the values equal those of a clean build.
+    """
+    function agrees_with_clean(spec, previous, dir; jobs)
         code = render(spec)
-        build_source(code, dir; jobs)
+        predicted = outdated_source(code, dir)
+        before = previous === nothing ? nothing : combinations(dir)
+        s = build_source(code, dir; jobs)
+        issubset(s.built, [o.name for o in predicted]) || return false
+        issubset([o.name for o in predicted if o.reason !== :upstream_outdated], s.built) ||
+            return false
+        if previous !== nothing
+            after = combinations(dir)
+            for name in (:m, :x, :h)
+                f = coefficient[name]
+                recoded = spec.modulus != previous.modulus ||
+                    spec.branching[f] != previous.branching[f]
+                expected = recoded ? after[name] : setdiff(after[name], before[name])
+                length(get(s.branches, name, String[])) == length(expected) || return false
+            end
+        end
         isempty(outdated_source(code, dir)) || return false
         clean = mktempdir()
         build_source(code, clean)
-        names = [Symbol("t$i") for i in eachindex(spec.targets)]
+        names = [
+            [Symbol("t$i") for i in eachindex(spec.targets)]
+            [:v1, :v2, :m, :x, :h, :total]
+        ]
         return read_values(dir, names...) == read_values(clean, names...)
     end
 
@@ -1079,10 +1140,10 @@ end
         jobs = job_counts,
     )
         dir = mktempdir()
-        agrees_with_clean(spec, dir; jobs) || return false
+        agrees_with_clean(spec, nothing, dir; jobs) || return false
         for e in steps
-            spec = apply_edit(spec, e)
-            agrees_with_clean(spec, dir; jobs = e.jobs) || return false
+            previous, spec = spec, apply_edit(spec, e)
+            agrees_with_clean(spec, previous, dir; jobs = e.jobs) || return false
         end
         return true
     end
