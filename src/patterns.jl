@@ -205,6 +205,105 @@ end
     end
 end
 
+@testitem "property: pattern combinators follow their laws" setup = [Properties] begin
+    using Targets: select_combinations, PatternElement, pattern_names, map_names
+
+    # Nested patterns over the targets :a, :b and :c (Cross takes two parts at
+    # most, so trees stay small).
+    small = Data.Integers(0, 4)
+    extend(p) = Data.OneOf(
+        map(ps -> Map(ps...), Data.Vectors(p; min_size = 1, max_size = 3)),
+        map(ps -> Cross(ps...), Data.Vectors(p; min_size = 1, max_size = 2)),
+        map(Head, p, small),
+        map(Slice, p, Data.Vectors(Data.Integers(1, 6); max_size = 4)),
+        map(Sample, p, small),
+    )
+    patterns = Data.recursive(extend, Data.SampledFrom([:a, :b, :c]); max_layers = 3)
+
+    leaves(p::Symbol) = [p]
+    leaves(p::Union{Map, Cross}) = reduce(vcat, leaves.(p.parts))
+    leaves(p::Union{Head, Slice, Sample}) = leaves(p.part)
+    parts(::Symbol) = []
+    parts(p::Union{Map, Cross}) = p.parts
+    parts(p::Union{Head, Slice, Sample}) = [p.part]
+    subpatterns(p) = [p; reduce(vcat, subpatterns.(parts(p)); init = [])]
+
+    "How many branches `p` has given each target's length, or `nothing` if it is invalid."
+    size_of(p::Symbol, n) = n[p]
+    function size_of(p::Pattern, n)
+        s = [size_of(x, n) for x in parts(p)]
+        any(isnothing, s) && return nothing
+        p isa Map && return allequal(s) ? first(s) : nothing
+        p isa Cross && return prod(s)
+        p isa Slice && return all(i -> 1 <= i <= only(s), p.indices) ? length(p.indices) : nothing
+        return min(only(s), p.n) # Head, Sample
+    end
+
+    throws(f) = try
+        f()
+        false
+    catch e
+        e isa ErrorException
+    end
+
+    "The laws of `p`'s own combinator, given how its parts select (`select`)."
+    function node_lawful(p, select)
+        combos = select(p)
+        p isa Head && return combos == select(p.part)[1:min(p.n, end)]
+        p isa Slice && return combos == select(p.part)[p.indices]
+        if p isa Sample # distinct elements of the part, in its order, the same each time
+            positions = indexin(combos, select(p.part))
+            return issorted(positions; lt = <=) && combos == select(p)
+        end
+        return true
+    end
+
+    report = @check config = check_config(; max_examples = 300) function patterns_follow_their_laws(
+        p = patterns,
+        q = patterns,
+        r = patterns,
+        sizes = Data.Vectors(Data.Integers(0, 3); min_size = 3, max_size = 3),
+        seed = Data.Integers{UInt64}(),
+    )
+        n = Dict(zip((:a, :b, :c), sizes))
+        elements(name) = [PatternElement("$name$i", "h$name$i") for i in 1:n[name]]
+        select(x) = select_combinations(x, elements, seed)
+        for x in subpatterns(p)
+            expected = size_of(x, n)
+            expected === nothing && (throws(() -> select(x)) ? continue : return false)
+            combos = select(x)
+            length(combos) == expected || return false
+            for c in combos # one pick per leaf, each the element at its index
+                [pick.name for pick in c] == leaves(x) || return false
+                all(pick -> pick.element == elements(pick.name)[pick.index], c) ||
+                    return false
+            end
+            node_lawful(x, select) || return false
+        end
+        # one part is the part itself, and nesting does not matter
+        same(a, b) = (size_of(a, n) === nothing) ? throws(() -> select(b)) :
+            select(a) == select(b)
+        all((
+            same(p, Map(p)),
+            same(p, Cross(p)),
+            same(Cross(p, q, r), Cross(Cross(p, q), r)),
+            same(Cross(p, q, r), Cross(p, Cross(q, r))),
+            same(Map(p, q, r), Map(Map(p, q), r)),
+            same(Map(p, q, r), Map(p, Map(q, r))),
+        )) || return false
+        # names are the leaves' in order, and renaming commutes with selecting
+        pattern_names(p) == unique(leaves(p)) || return false
+        renamed = map_names(x -> Symbol(x, :_x), p)
+        map_names(x -> Symbol(chop(String(x); tail = 2)), renamed) == p || return false
+        size_of(p, n) === nothing && return true
+        unrenamed(name) = elements(Symbol(chop(String(name); tail = 2)))
+        renamed_picks = select_combinations(renamed, unrenamed, seed)
+        return [[Symbol(x.name, :_x) for x in c] for c in select(p)] ==
+            [[x.name for x in c] for c in renamed_picks]
+    end
+    @test check_result(report).holds
+end
+
 @testitem "macro patterns use R-style calls" begin
     p = @pipeline begin
         @target a = [1, 2]

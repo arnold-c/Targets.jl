@@ -385,6 +385,161 @@ end
     end
 end
 
+@testitem "property: builds respect dependencies, slots and failures at any jobs" setup = [
+    Properties,
+] begin
+    using Targets: open_store, read_events
+
+    # Each target adds its number to its dependencies' values (`nothing`, from a
+    # failed `error = :null` target, counts as 0), or fails. Every choice shrinks
+    # towards the first value it is sampled from: the simplest.
+    spec_target = @composed (
+        back = Data.Vectors(Data.Integers(1, 4); max_size = 3),
+        slots = Data.SampledFrom([1, 1, 2, :all]),
+        main = Data.SampledFrom([false, false, false, true]),
+        fails = Data.SampledFrom([false, false, false, true]),
+        error = Data.SampledFrom([:stop, :continue, :null]),
+        pause = Data.SampledFrom([0.0, 0.002, 0.01]),
+    ) -> (; back, slots, main, fails, error, pause)
+    # dependencies are drawn as how far back they are, so pipelines are acyclic
+    dep_indices(i, s) = sort!(unique(i - k for k in s.back if k < i))
+    name(i) = Symbol(:t, i)
+    index(n) = parse(Int, String(n)[2:end])
+
+    # (target, :enter or :exit, slots granted, task) in the order they happened
+    const LOG = Tuple{Symbol, Symbol, Int, UInt}[]
+    const LOG_LOCK = ReentrantLock()
+    note!(entry) = lock(() -> push!(LOG, entry), LOG_LOCK)
+    function run_logged(n, i, s, xs)
+        note!((n, :enter, tar_slots(), objectid(current_task())))
+        try
+            sleep(s.pause)
+            s.fails && error("planned failure of $n")
+            return i + sum(x -> something(x, 0), xs; init = 0)
+        finally
+            note!((n, :exit, 0, objectid(current_task())))
+        end
+    end
+
+    function pipeline(spec)
+        targets = map(enumerate(spec)) do (i, s)
+            n = name(i)
+            return target(
+                n,
+                (xs...) -> run_logged(n, i, s, xs);
+                deps = name.(dep_indices(i, s)),
+                slots = s.slots,
+                deployment = s.main ? :main : :spawn,
+                s.error,
+            )
+        end
+        return tar_pipeline(targets...)
+    end
+
+    "Each target's outcome and value, worked out from the pipeline alone."
+    function model(spec)
+        outcome, value = Symbol[], Union{Nothing, Int}[]
+        for (i, s) in enumerate(spec)
+            deps = dep_indices(i, s)
+            blocks(d) = outcome[d] === :blocked ||
+                (outcome[d] === :errored && spec[d].error !== :null)
+            push!(outcome, any(blocks, deps) ? :blocked : s.fails ? :errored : :built)
+            push!(
+                value,
+                outcome[i] === :built ?
+                    i + sum(d -> something(value[d], 0), deps; init = 0) :
+                    nothing,
+            )
+        end
+        return outcome, value
+    end
+
+    granted(s, jobs) = s.slots === :all ? jobs : min(s.slots, jobs)
+
+    "Whether the targets that ran waited for their dependencies, got their slots and never exceeded `jobs`."
+    function ran_well(spec, jobs, me)
+        position = Dict((n, ev) => k for (k, (n, ev, _, _)) in enumerate(LOG))
+        entered = [(n, slots, task) for (n, ev, slots, task) in LOG if ev === :enter]
+        allunique(first.(entered)) || return false # nothing runs twice
+        for (n, slots, task) in entered
+            i = index(n)
+            s = spec[i]
+            slots == granted(s, jobs) || return false
+            (s.main || jobs == 1) && task != me && return false # runs in the calling task
+            for d in dep_indices(i, s)
+                get(position, (name(d), :exit), typemax(Int)) < position[(n, :enter)] ||
+                    return false
+            end
+        end
+        used = 0
+        for (n, ev, _, _) in LOG
+            used += (ev === :enter ? 1 : -1) * granted(spec[index(n)], jobs)
+            used <= jobs || return false
+        end
+        return true
+    end
+
+    "The last outcome the store's events give each target, and whether events are well ordered."
+    function event_outcomes(store, keep_going, spec)
+        events = filter(e -> !isempty(e.key), read_events(open_store(store)))
+        final = Dict{Symbol, Symbol}()
+        running = Set{String}()
+        stopped = false
+        for e in events
+            if e.status === :started
+                stopped &&
+                    return final, false # nothing starts once a failure stops the build
+                push!(running, e.key)
+            elseif e.status in (:built, :errored, :blocked, :skipped)
+                delete!(running, e.key)
+                final[Symbol(e.key)] = e.status
+                stopped |= e.status === :errored &&
+                    !keep_going &&
+                    spec[index(e.key)].error === :stop
+            end
+        end
+        return final, isempty(running) # every job that started was committed
+    end
+
+    report = @check config = check_config(;
+        max_examples = 40,
+    ) function builds_respect_the_schedule(
+        spec = sized(spec_target, 8),
+        jobs = Data.SampledFrom([1, 2, 4]),
+        keep_going = Data.Booleans(),
+    )
+        empty!(LOG)
+        outcome, value = model(spec)
+        stops = !keep_going &&
+            any(i -> outcome[i] === :errored && spec[i].error === :stop, eachindex(spec))
+        dir = mktempdir()
+        store = joinpath(dir, "_targets")
+        summary = try
+            tar_make(pipeline(spec); store, root = dir, io = devnull, jobs, keep_going)
+        catch e
+            (stops && occursin("planned failure", sprint(showerror, e))) || rethrow()
+            nothing
+        end
+        stops == (summary === nothing) || return false
+        ran_well(spec, jobs, objectid(current_task())) || return false
+        final, ordered = event_outcomes(store, keep_going, spec)
+        ordered || return false
+        # every outcome recorded is the model's; without a stop, every target has one
+        all(n -> final[n] === outcome[index(n)], keys(final)) || return false
+        stops && return true
+        length(final) == length(spec) || return false
+        expected(o) = Set(name(i) for i in eachindex(spec) if outcome[i] === o)
+        Set(summary.built) == expected(:built) || return false
+        Set(summary.errored) == expected(:errored) || return false
+        Set(summary.blocked) == expected(:blocked) || return false
+        return all(
+            i -> tar_read(name(i); store) == value[i],
+            filter(i -> outcome[i] === :built, eachindex(spec)),
+        )
+    end
+    @test check_result(report).holds
+end
+
 @testitem "up-to-date targets are reported before the first job starts" begin
     # `slow` is rebuilt; `b` and `c` are up to date but declared after it, so a
     # queue taken strictly in order would build `slow` first.
