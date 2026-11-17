@@ -113,16 +113,29 @@ function stored_groups(s::Store)
     )
 end
 
-"Where the object of `key` is stored in `format`."
-object_path(s::Store, key, format::StorageFormat = DEFAULT_FORMAT) = joinpath(
+"""
+The file for `key` (plus `suffix`) under the store's `dir`. A branch key such as
+`fits/1a2b3c4d` names a file in a subdirectory; its parts are joined so that the
+path uses one separator throughout (on Windows, a path with a `/` differs from
+the same path that `joinpath` and `readdir` spell with `\\`).
+"""
+key_path(s::Store, dir::AbstractString, key, suffix = "") = joinpath(
     s.root,
+    dir,
+    split(string(key, suffix), '/')...,
+)
+
+"Where the object of `key` is stored in `format`."
+object_path(s::Store, key, format::StorageFormat = DEFAULT_FORMAT) = key_path(
+    s,
     "objects",
-    string(key) * "." * extension(format),
+    key,
+    "." * extension(format),
 )
 
 "Object files stored for `key`, in any format (normally at most one)."
 function object_files(s::Store, key)
-    base = joinpath(s.root, "objects", string(key))
+    base = key_path(s, "objects", key)
     dir = dirname(base)
     isdir(dir) || return String[]
     prefix = basename(base) * "."
@@ -138,7 +151,7 @@ find_object(s::Store, key) = (
     files = object_files(s, key);
     isempty(files) ? nothing : first(files)
 )
-meta_path(s::Store, key) = joinpath(s.root, "meta", string(key) * ".toml")
+meta_path(s::Store, key) = key_path(s, "meta", key, ".toml")
 log_path(s::Store) = joinpath(s.root, "log", "progress.log")
 
 """

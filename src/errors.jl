@@ -122,7 +122,7 @@ function collecting_warnings(f)
     return value, collector.messages
 end
 
-workspace_path(s::Store, key) = joinpath(s.root, "workspaces", string(key) * ".jld2")
+workspace_path(s::Store, key) = key_path(s, "workspaces", key, ".jld2")
 
 """
     save_workspace!(store, result)
