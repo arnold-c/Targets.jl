@@ -107,7 +107,7 @@ function attempt(job::Job)
     started = time_ns()
     elapsed() = (time_ns() - started) / 1.0e9
     try
-        job.load_error === nothing || throw(job.load_error)
+        rethrow_load_error(job.load_error)
         before = CHECK_MUTATION[] ? map(canonical_hash, job.args) : nothing
         value, warnings = run_target(job)
         seconds = elapsed()
@@ -120,6 +120,15 @@ function attempt(job::Job)
         return JobResult(job, nothing, "", (;), elapsed(), e, catch_backtrace())
     end
 end
+
+# Dispatch rather than `job.load_error === nothing || throw(...)` in `attempt`:
+# on Julia < 1.14, JET crashes analysing a function that throws a field it has
+# just compared and then makes another call that may throw (aviatesk/JET.jl#916),
+# which hid the whole build from its analysis. Revert once JET's compat floor
+# includes the fix.
+"Throw the exception raised while loading a job's arguments, if there was one."
+rethrow_load_error(::Nothing) = nothing
+rethrow_load_error(e) = throw(e)
 
 """
 The store and project root of the build running the current target, or
