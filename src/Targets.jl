@@ -24,7 +24,9 @@ using JuliaSyntax:
     source_location
 using Preferences: Preferences
 using Random: Random
-using ScopedValues: ScopedValue, with
+# before Julia 1.11, scoped values ride on the logger: swap loggers with
+# `ScopedValues.with_logger`, never `Logging.with_logger`, or they are lost
+using ScopedValues: ScopedValues, ScopedValue, with
 using SHA: SHA
 using Serialization: Serialization
 using StyledStrings: @styled_str

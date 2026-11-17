@@ -250,9 +250,9 @@ end
 
 "Run `f` with console log messages routed through `d` (other loggers are left alone)."
 function with_display_logger(f, d::LiveDisplay)
-    parent = Logging.current_logger()
+    parent = ScopedValues.current_logger()
     parent isa Logging.ConsoleLogger || return f()
-    return Logging.with_logger(f, LiveLogger(d, parent))
+    return ScopedValues.with_logger(f, LiveLogger(d, parent))
 end
 
 @testitem "a live footer lists running jobs and counts the rest" begin

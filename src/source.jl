@@ -202,7 +202,7 @@ provided it names them (`generates`).
 function method_location(m::Method)
     startswith(string(m.name), '#') && return recorded_location(m)
     is_generated_function_type(method_function_type(m)) || return CodeTracking.whereis(m)
-    found = Logging.with_logger(() -> CodeTracking.whereis(m), Logging.NullLogger())
+    found = ScopedValues.with_logger(() -> CodeTracking.whereis(m), Logging.NullLogger())
     return something(found, recorded_location(m))
 end
 

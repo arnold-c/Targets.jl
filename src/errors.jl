@@ -104,8 +104,8 @@ end
 
 "Call `f()` and return its result with the warnings it logged (also from tasks it spawns)."
 function collecting_warnings(f)
-    collector = WarningCollector(Logging.current_logger())
-    value = Logging.with_logger(f, collector)
+    collector = WarningCollector(ScopedValues.current_logger())
+    value = ScopedValues.with_logger(f, collector)
     return value, collector.messages
 end
 
