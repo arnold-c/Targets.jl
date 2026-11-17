@@ -119,6 +119,37 @@ end
     end
 end
 
+@testitem "property: more batches extend the replications, and build only the new ones" setup = [
+    Properties,
+] begin
+    pipeline(batches, reps) = tar_pipeline(tar_rep(:draws, () -> rand(); batches, reps))
+    function build(p, store; jobs = 1)
+        return tar_make(p; store, root = dirname(store), io = devnull, jobs)
+    end
+    fresh() = joinpath(mktempdir(), "_targets")
+
+    report = @check config = check_config(;
+        max_examples = 20,
+    ) rng = property_rng() function batches_extend(
+        batches = Data.Integers(1, 3),
+        more = Data.Integers(1, 2),
+        reps = Data.Integers(1, 3),
+        jobs = Data.SampledFrom([1, 4]),
+    )
+        small, large, grown = fresh(), fresh(), fresh()
+        build(pipeline(batches, reps), small)
+        build(pipeline(batches + more, reps), large; jobs)
+        build(pipeline(batches, reps), grown)
+        s = build(pipeline(batches + more, reps), grown; jobs)
+        draws = tar_read(:draws; store = large)
+        return allunique(draws) &&
+            draws[1:(batches * reps)] == tar_read(:draws; store = small) &&
+            tar_read(:draws; store = grown) == draws &&
+            length(s.branches[:draws_batches]) == more
+    end
+    @test check_result(report).holds
+end
+
 @testitem "tar_map_rep replicates per value" setup = [JETChecks] begin
     m = tar_map_rep(:sim, (mu, n) -> mu + n, (a = 1, b = 100); batches = 2, reps = 2)
     @test_call tar_map_rep(:sim, (mu, n) -> mu + n, (a = 1, b = 100); batches = 2, reps = 2)

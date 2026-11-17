@@ -135,6 +135,67 @@ end
         (name = :a, reason = :seed_changed)
 end
 
+@testitem "property: random values depend only on the target, however it is built" setup = [
+    Properties,
+] begin
+    # Random targets r1, r2, ... (each its own draw plus its dependencies' values)
+    # and a branching target drawing once per element of `grid`.
+    back = Data.Vectors(Data.Integers(1, 4); max_size = 2)
+    dep_indices(i, b) = sort!(unique(i - k for k in b if k < i))
+    name(i) = Symbol(:r, i)
+    function pipeline(backs, order, grid)
+        targets = [
+            target(
+                name(i),
+                (xs...) -> rand() + sum(xs; init = 0.0);
+                deps = name.(dep_indices(i, b)),
+            )
+            for (i, b) in enumerate(backs)
+        ]
+        return tar_pipeline(
+            targets[order]...,
+            target(:grid, () -> grid),
+            target(:draws, grid -> grid + rand(); pattern = :grid);
+            seed = 3,
+        )
+    end
+    function build(p; kwargs...)
+        store = joinpath(mktempdir(), "_targets")
+        tar_make(p; store, root = dirname(store), io = devnull, kwargs...)
+        return store
+    end
+    branch_values(grid, store) = Dict(zip(grid, tar_read(:draws; store)))
+
+    report = @check config = check_config(;
+        max_examples = 20,
+    ) rng = property_rng() function seeds_follow_targets(
+        backs = sized(back, 6),
+        priorities = Data.Vectors(Data.Integers(1, 100); min_size = 6, max_size = 6),
+        chosen = Data.Vectors(Data.Booleans(); min_size = 6, max_size = 6),
+        grid = Data.Vectors(Data.Integers(1, 20); min_size = 1, max_size = 4),
+        extra = Data.Vectors(Data.Integers(21, 30); max_size = 2),
+        jobs = Data.SampledFrom([1, 4]),
+    )
+        n = length(backs)
+        grid = unique(grid)
+        reference = build(pipeline(backs, 1:n, grid))
+        # declared in another order, the pattern reordered and extended, a subset
+        # built, maybe concurrently
+        moved = [reverse(grid); unique(extra)]
+        names = [name(i) for i in 1:n if chosen[i]]
+        other = build(
+            pipeline(backs, sortperm(priorities[1:n]), moved);
+            names = [names; :draws],
+            jobs,
+        )
+        all(r -> tar_read(r; store = other) == tar_read(r; store = reference), names) ||
+            return false
+        before, after = branch_values(grid, reference), branch_values(moved, other)
+        return all(g -> after[g] == before[g], grid)
+    end
+    @test check_result(report).holds
+end
+
 @testitem "branches keep their random values when the pattern is reordered" setup = [
     SourceFixtures,
 ] begin
