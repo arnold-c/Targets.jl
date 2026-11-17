@@ -761,6 +761,102 @@ rendered_by_make(options = notebook_options()) = notebook_value(
     @test !any(contains("not_executed"), parts.prose)
 end
 
+@testitem "property: quarto_text finds exactly the cells, inline code and prose written" setup = [
+    Properties,
+] begin
+    using Targets: quarto_text, quarto_includes
+
+    # Prose: plain text, inline Julia and include shortcodes, none starting a fence.
+    text(chars, n) = Data.Text(Data.SampledFrom(collect(chars)); max_len = n)
+    none = String[]
+    segment = Data.OneOf(
+        map(s -> (text = s, inline = none, includes = none), text("ab (),.:", 6)),
+        map(
+            (h, t) -> (text = "`{julia} $h$t`", inline = [strip("$h$t")], includes = none),
+            Data.SampledFrom(['a', 'x']),
+            text("ab (:)", 5),
+        ),
+        map(
+            (name, quote_) -> (
+                text = "{{< include $quote_$name.qmd$quote_ >}}",
+                inline = none,
+                includes = ["$name.qmd"],
+            ),
+            map(s -> "f" * s, text("ab_", 3)),
+            Data.SampledFrom(["", "\"", "'"]),
+        ),
+    )
+    prose = map(Data.Vectors(segment; max_size = 3)) do segments
+        return (
+            lines = [join((s.text for s in segments), " ")],
+            cells = none,
+            inline = reduce(vcat, (s.inline for s in segments); init = none),
+            includes = reduce(vcat, (s.includes for s in segments); init = none),
+            prose = [join((s.text for s in segments), " ")],
+        )
+    end
+
+    # A fenced block. Its body holds code, `#| eval: false` lines and fence-like
+    # lines that do not close it: shorter, of the other character, or with an
+    # info string. It is a cell if its info string makes it executable Julia.
+    infos = [
+        ("{julia}", true),
+        ("{julia echo=false}", true),
+        ("{julia, label}", true),
+        ("julia", false),
+        ("{python}", false),
+        ("", false),
+        ("{julialike}", false),
+    ]
+    body_line = Data.OneOf(
+        map(s -> (_, _) -> "x" * s, text("ab =(1)", 6)),
+        map(s -> (_, _) -> s, Data.SampledFrom(["#| eval: false", "  #|eval :false "])),
+        Data.Just((c, n) -> c^(n - 1)),
+        Data.Just((c, n) -> (c == '`' ? '~' : '`')^n),
+        Data.Just((c, n) -> c^n * "{julia}"),
+    )
+    block = @composed (
+        char = Data.SampledFrom(['`', '~']),
+        len = Data.Integers(3, 5),
+        indent = Data.Integers(0, 3),
+        info = Data.SampledFrom(infos),
+        body = Data.Vectors(body_line; max_size = 4),
+        longer = Data.Integers(0, 2),
+        trailing = Data.Integers(0, 2),
+    ) -> begin
+        lines = [render(char, len) for render in body]
+        executable = last(info) && !any(l -> occursin("eval", l), lines)
+        (
+            lines = [
+                " "^indent * char^len * first(info)
+                lines
+                " "^indent * char^(len + longer) * " "^trailing
+            ],
+            cells = executable ? [join(lines, '\n')] : none,
+            inline = none,
+            includes = none,
+            prose = none,
+        )
+    end
+
+    report = @check config = check_config(;
+        max_examples = 500,
+    ) rng = property_rng() function quarto_parts_are_found(parts = Data.Vectors(
+        Data.OneOf(prose, block);
+        max_size = 6,
+    ))
+        doc = join(reduce(vcat, (p.lines for p in parts); init = String[]), '\n')
+        expected(field) = reduce(vcat, (getfield(p, field) for p in parts); init = String[])
+        found = quarto_text(doc)
+        isempty(parts) && return found.prose == [""]
+        return found.cells == expected(:cells) &&
+            found.inline == expected(:inline) &&
+            found.prose == expected(:prose) &&
+            quarto_includes(found.prose) == expected(:includes)
+    end
+    @test check_result(report).holds
+end
+
 @testitem "quarto_sources resolves document includes from the top document" begin
     using Targets: quarto_sources
     mktempdir() do dir
