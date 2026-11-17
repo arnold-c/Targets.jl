@@ -13,11 +13,12 @@ Targets.write_value(f::CSVFormat, path::AbstractString, value) = CSV.write(
     delim = f.delim,
 )
 
-# Reads detect the delimiter: the recorded format name does not carry the options.
-# A row of a one-column table that holds `missing` is written as an empty line,
-# which CSV.jl would otherwise skip.
-Targets.read_value(::CSVFormat, path::AbstractString) = CSV.File(
+# Reads use the recorded delimiter: CSV.jl detects one from the header, which a
+# one-column table does not have. A row of a one-column table that holds
+# `missing` is written as an empty line, which CSV.jl would otherwise skip.
+Targets.read_value(f::CSVFormat, path::AbstractString) = CSV.File(
     path;
+    delim = f.delim,
     ignoreemptyrows = false,
 )
 

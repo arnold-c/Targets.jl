@@ -15,9 +15,31 @@ Supertype of storage formats. A format `F` defines
 - `Targets.write_value(::F, path, value)` and
 - `Targets.read_value(::F, path)`,
 
-and, to be selectable by name, `Targets.storage_format(::Val{name}) = F()`.
+and, to be selectable by name, `Targets.storage_format(::Val{name}) = F()`. A
+format with options that reading needs also defines
+
+- `Targets.format_options(::F)::Dict{String, Any}`, the options that differ from
+  the defaults, as TOML values, recorded in metadata, and
+- `Targets.with_options(::F, options)`, the format with recorded `options`.
 """
 abstract type StorageFormat end
+
+"""
+    format_options(format)::Dict{String, Any}
+
+The options of `format` that differ from those of the format its name gives,
+as TOML values. They are recorded in metadata, and `with_options` restores them
+to read the object. Formats without options record none.
+"""
+format_options(::StorageFormat) = Dict{String, Any}()
+
+"""
+    with_options(format, options)
+
+`format`, as its name gives it, with the `options` that `format_options`
+recorded.
+"""
+with_options(format::StorageFormat, options) = format
 
 "The format named `name`, e.g. `storage_format(Val(:jld2))`."
 function storage_format end
@@ -81,6 +103,12 @@ Base.@kwdef struct ArrowFormat <: StorageFormat
 end
 format_name(::ArrowFormat) = :arrow
 extension(::ArrowFormat) = "arrow"
+format_options(f::ArrowFormat) = f == ArrowFormat() ?
+    Dict{String, Any}() :
+    Dict{String, Any}("compress" => string(f.compress))
+with_options(::ArrowFormat, options) = haskey(options, "compress") ?
+    ArrowFormat(; compress = Symbol(options["compress"])) :
+    ArrowFormat()
 
 """
     ParquetFormat()
@@ -96,13 +124,20 @@ extension(::ParquetFormat) = "parquet"
     CSVFormat(; delim = ',')
 
 CSV text, for any Tables.jl table; mainly for interchange (Arrow is faster).
-Needs `using CSV`. Reading returns a `CSV.File` (the delimiter is detected).
+Needs `using CSV`. Reading returns a `CSV.File`, read with the delimiter the
+object was written with.
 """
 Base.@kwdef struct CSVFormat <: StorageFormat
     delim::Char = ','
 end
 format_name(::CSVFormat) = :csv
 extension(::CSVFormat) = "csv"
+format_options(f::CSVFormat) = f == CSVFormat() ?
+    Dict{String, Any}() :
+    Dict{String, Any}("delim" => string(f.delim))
+with_options(::CSVFormat, options) = haskey(options, "delim") ?
+    CSVFormat(; delim = only(options["delim"])) :
+    CSVFormat()
 
 # Packages that provide the formats Targets knows about but does not load itself.
 const FORMAT_PACKAGES = Dict(:arrow => "Arrow", :parquet => "Parquet2", :csv => "CSV")
@@ -142,26 +177,37 @@ record_format(t) = is_external(t) ?
     string(t.format) :
     string(format_name(resolve_format(t.format)))
 
-"Record fields describing target `t`'s format: its name, and a hash of its options."
-format_fields(t) = (
-    format = record_format(t),
-    format_hash = is_external(t) ? "" : canonical_hash(resolve_format(t.format)),
+"Record fields describing format `f`: its name, a hash of it, and its options."
+format_fields(f::StorageFormat) = (
+    format = string(format_name(f)),
+    format_hash = canonical_hash(f),
+    format_options = format_options(f),
 )
+"Record fields describing target `t`'s format."
+format_fields(t) = is_external(t) ?
+    (format = string(t.format), format_hash = "", format_options = Dict{String, Any}()) :
+    format_fields(resolve_format(t.format))
 
 """
     same_format(record, t)
 
 Whether `record` was written in target `t`'s current format (including options).
-Records from before format options were tracked compare by name only.
+Records from before format options were tracked compare by name only; those from
+before they were recorded, by hash, and lack the options of a format that has
+any, so the target is rebuilt to record them.
 """
 function same_format(record, t)
     current = format_fields(t)
     isempty(record.format_hash) && return record.format == current.format
-    return record.format_hash == current.format_hash
+    return record.format_hash == current.format_hash &&
+        record.format_options == current.format_options
 end
 
-"The format recorded under `name` in a target's metadata."
-recorded_format(name::AbstractString) = resolve_format(Symbol(name))
+"The format `record` was written in, with its recorded options."
+recorded_format(record) = with_options(
+    resolve_format(Symbol(record.format)),
+    record.format_options,
+)
 
 @testitem "formats resolve by name, with helpful errors" begin
     using Targets: resolve_format, JLD2Format, available_formats, ParquetFormat
@@ -188,6 +234,7 @@ end
 
 @testitem "table formats round-trip and write identical bytes for identical tables" setup = [
     JETChecks,
+    ObjectFixtures,
 ] begin
     using Arrow, CSV, Parquet2, DataFrames
     using Targets:
@@ -209,9 +256,9 @@ end
     mktempdir() do dir
         s = open_store(joinpath(dir, "_targets"))
         for (i, format) in enumerate(formats)
-            first_path = write_object(s, "first$i", df; format)
+            first_path = store_object(s, "first$i", df, format)
             sleep(1.1) # a writer that embeds a timestamp would now differ
-            second_path = write_object(s, "second$i", df; format)
+            second_path = store_object(s, "second$i", df, format)
             @test hash_file(first_path) == hash_file(second_path)
             @test DataFrame(read_object(s, "first$i")) == df
             @test_call write_object(s, "first$i", df; format)
@@ -234,15 +281,12 @@ end
     @test check_result(report).holds
 end
 
-@testitem "property: table formats read back every table" setup = [Properties] begin
+@testitem "property: table formats read back every table" setup = [
+    Properties,
+    ObjectFixtures,
+] begin
     using Arrow, CSV, Parquet2, DataFrames
-    using Targets:
-        open_store,
-        write_object,
-        read_object,
-        ArrowFormat,
-        ParquetFormat,
-        CSVFormat
+    using Targets: open_store, read_object, ArrowFormat, ParquetFormat, CSVFormat
 
     # CSV cannot tell a string such as "1" or "true" from a number or a Bool, so
     # strings for it start with a letter that no other value does.
@@ -267,7 +311,7 @@ end
 
     s = open_store(joinpath(mktempdir(), "_targets"))
     function round_trips(df, format)
-        write_object(s, "t", df; format)
+        store_object(s, "t", df, format)
         return isequal(DataFrame(read_object(s, "t")), df)
     end
     binary = [ArrowFormat(), ArrowFormat(compress = :zstd), ParquetFormat()]
@@ -289,6 +333,38 @@ end
         round_trips(df, format)
     end
     @test check_result(report).holds
+end
+
+@testitem "objects are read with the format options they were written with" begin
+    using CSV, DataFrames
+    using Targets: open_store, read_meta, write_meta, update
+    # one column, so the header has no delimiter to detect
+    p = tar_pipeline(
+        target(:semi, () -> DataFrame(c1 = ["x", "x,"]); format = CSVFormat(delim = ';')),
+        target(:plain, () -> DataFrame(c1 = ["x", "x;"]); format = :csv),
+    )
+    mktempdir() do dir
+        store = joinpath(dir, "_targets")
+        build() = tar_make(p; store, root = dir, io = devnull)
+        @test build().built == [:semi, :plain]
+        @test DataFrame(tar_read(:semi; store)).c1 == ["x", "x,"]
+        @test DataFrame(tar_read(:plain; store)).c1 == ["x", "x;"]
+        s = open_store(store)
+        # only options that differ from the format's defaults are recorded
+        @test read_meta(s, :semi).format_options == Dict("delim" => ";")
+        @test isempty(read_meta(s, :plain).format_options)
+        # a record from before options were recorded is rebuilt to record them
+        for name in (:semi, :plain)
+            write_meta(
+                s,
+                name,
+                update(read_meta(s, name); format_options = Dict{String, Any}()),
+            )
+        end
+        @test tar_outdated(p; store, root = dir) ==
+            [(name = :semi, reason = :format_changed)]
+        @test build().built == [:semi]
+    end
 end
 
 @testitem "a target stored as a table format builds, reads and stays up to date" begin

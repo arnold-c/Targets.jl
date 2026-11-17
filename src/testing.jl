@@ -44,6 +44,24 @@
     )
 end
 
+@testmodule ObjectFixtures begin
+    using Targets: Record, format_fields, write_meta, write_object
+    export store_object
+
+    """
+        store_object(s, key, value, format)
+
+    Write `value` as the object of `key` in `format`, with the metadata a build
+    records for it, so that it reads back in that format with its options. Returns
+    the object's path.
+    """
+    function store_object(s, key, value, format)
+        path = write_object(s, key, value; format)
+        write_meta(s, key, Record(; format_fields(format)...))
+        return path
+    end
+end
+
 @testmodule Properties begin
     using Supposition: Supposition, Data, @check, @composed
     using Random: Xoshiro

@@ -217,7 +217,7 @@ end
 function object_format(s::Store, key, path::AbstractString)
     record = read_meta(s, key)
     (record === nothing || record.format in ("file", "url")) ||
-        return recorded_format(record.format)
+        return recorded_format(record)
     ext = last(split(basename(path), '.'))
     for name in available_formats()
         format = storage_format(Val(name))
@@ -247,8 +247,10 @@ Base.@kwdef struct Record
     seconds::Float64 = 0.0
     error::String = ""
     julia_version::String = string(VERSION)
-    # A hash of the storage format and its options (see formats.jl).
+    # A hash of the storage format and its options, and the options that differ
+    # from the format's defaults, to read the object with (see formats.jl).
     format_hash::String = ""
+    format_options::Dict{String, Any} = Dict{String, Any}()
     # The seed the target ran with (see seeds.jl), empty if it was not seeded.
     seed::String = ""
     # File targets keep no object: the paths they returned, whether it was a single
