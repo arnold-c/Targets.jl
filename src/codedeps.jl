@@ -24,8 +24,8 @@ end
 function is_user_file(file, roots::Vector{String})
     f = String(file)
     isabspath(f) || return false
-    f = normpath(f)
-    return any(r -> startswith(f, r), roots)
+    path = normpath(f) # a new name: reassigning `f` would box it in the closure
+    return any(r -> startswith(path, r), roots)
 end
 
 function is_user_module(mod::Module, roots::Vector{String})

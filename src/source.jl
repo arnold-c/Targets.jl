@@ -389,7 +389,8 @@ end
 
 mentions(x::Symbol, name::Symbol) = x === name
 mentions(x::QuoteNode, name::Symbol) = mentions(x.value, name)
-mentions(x::Expr, name::Symbol) = any(a -> mentions(a, name), x.args)
+# `::Bool`: inference gives up on the recursion, and `any` of a non-Bool may be `missing`
+mentions(x::Expr, name::Symbol) = any(a -> mentions(a, name)::Bool, x.args)
 mentions(_, ::Symbol) = false
 
 """
