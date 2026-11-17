@@ -220,6 +220,77 @@ end
     end
 end
 
+@testitem "property: jld2 and jls read back every plain value" setup = [Properties] begin
+    using Targets: open_store, write_object, read_object, canonical_hash, storage_format
+    s = open_store(joinpath(mktempdir(), "_targets"))
+    # an equal canonical hash means the same types and values throughout
+    report = @check config = check_config(; max_examples = 300) function values_round_trip(
+        x = plain_values(),
+        format = Data.SampledFrom([:jld2, :jls]),
+    )
+        write_object(s, "x", x; format = storage_format(Val(format)))
+        return canonical_hash(read_object(s, "x")) == canonical_hash(x)
+    end
+    @test check_result(report).holds
+end
+
+@testitem "property: table formats read back every table" setup = [Properties] begin
+    using Arrow, CSV, Parquet2, DataFrames
+    using Targets:
+        open_store,
+        write_object,
+        read_object,
+        ArrowFormat,
+        ParquetFormat,
+        CSVFormat
+
+    # CSV cannot tell a string such as "1" or "true" from a number or a Bool, so
+    # strings for it start with a letter that no other value does.
+    strings(csv) = csv ?
+        map(s -> "x" * s, Data.Text(Data.SampledFrom(collect("ab ,;\"")); max_len = 3)) :
+        Data.Text(Data.Characters(; valid = true); max_len = 3)
+    function columns(n, csv)
+        of(gen) = Data.Vectors(gen; min_size = n, max_size = n)
+        return Data.OneOf(
+            of(Data.Integers(-3, 3)),
+            of(Data.SampledFrom([0.0, -0.0, 1.5, Inf, NaN])),
+            of(Data.Booleans()),
+            of(strings(csv)),
+            of(Data.OneOf(Data.Integers(-3, 3), Data.Just(missing))),
+        )
+    end
+    tables(csv) = Data.bind(Data.Integers(0, 4)) do n
+        map(Data.Vectors(columns(n, csv); min_size = 1, max_size = 3)) do cols
+            DataFrame([Symbol(:c, i) => c for (i, c) in enumerate(cols)])
+        end
+    end
+
+    s = open_store(joinpath(mktempdir(), "_targets"))
+    function round_trips(df, format)
+        write_object(s, "t", df; format)
+        return isequal(DataFrame(read_object(s, "t")), df)
+    end
+    binary = [ArrowFormat(), ArrowFormat(compress = :zstd), ParquetFormat()]
+    report = @check config = check_config(;
+        max_examples = 150,
+    ) function binary_tables_round_trip(
+        df = tables(false),
+        format = Data.SampledFrom(binary),
+    )
+        round_trips(df, format)
+    end
+    @test check_result(report).holds
+    report = @check config = check_config(;
+        max_examples = 150,
+    ) function csv_tables_round_trip(
+        df = tables(true),
+        format = Data.SampledFrom([CSVFormat(), CSVFormat(delim = ';')]),
+    )
+        round_trips(df, format)
+    end
+    @test check_result(report).holds
+end
+
 @testitem "a target stored as a table format builds, reads and stays up to date" begin
     using Arrow, CSV, Parquet2, DataFrames
     for format in (:arrow, :parquet, :csv)
