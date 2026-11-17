@@ -14,16 +14,29 @@ function user_frames(backtrace)
     ours(fr) = occursin("call_target", string(fr.func))
     stop = findfirst(ours, frames)
     user = frames[1:(stop === nothing ? end : stop - 1)]
-    # the frames between Targets and the user's function (scoped values, world age,
-    # and Targets' own callables, such as the function of a `@target`)
     while !isempty(user) && between_frame(user[end])
         pop!(user)
     end
     return [string(fr) for fr in user]
 end
 
-between_frame(fr) = fr.func in (:with, :invokelatest, :invoke_in_world) ||
-    parentmodule(fr) === @__MODULE__
+# The frames between Targets and the user's function: scoped values (before Julia
+# 1.11 from ScopedValues.jl, through the logger), world age, and Targets' own
+# callables, such as the function of a `@target`. Before Julia 1.11 inlined frames
+# have no module, so for them the file decides. (The user's function itself is
+# called dynamically, so never inlined, and trimming stops there.)
+function between_frame(fr)
+    occursin("invokelatest", string(fr.func)) && return true
+    fr.func in (:with, :invoke_in_world, :with_logstate, :with_logger) && return true
+    plumbing = (@__MODULE__, ScopedValues)
+    m = parentmodule(fr)
+    m === nothing || return m in plumbing
+    file = string(fr.file)
+    return any(plumbing) do p
+        dir = pkgdir(p)
+        dir !== nothing && startswith(file, joinpath(dir, ""))
+    end
+end
 
 """
     tar_errored(; store = default_store_path())
