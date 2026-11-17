@@ -47,7 +47,7 @@ end
 @testmodule Properties begin
     using Supposition: Supposition, Data, @check, @composed
     using Random: Xoshiro
-    export Data, @check, @composed, check_config, check_result, sized
+    export Data, @check, @composed, check_config, check_result, sized, plain_values
 
     """
         check_config(; max_examples, seed = 1)
@@ -86,6 +86,44 @@ end
         Data.Vectors(gen; min_size = most, max_size = most),
         Data.Integers(1, most),
     )
+
+    """
+        plain_values()
+
+    Nested plain data: integers of two widths, floats (with `-0.0` and `Inf`),
+    booleans, strings, symbols, characters, `nothing` and `missing`, in vectors,
+    matrices, tuples, named tuples, pairs, dicts, sets and expressions. Scalars come
+    from small domains, so that equal values are drawn often; containers hold
+    `Any`, so their types depend only on their kind and shape.
+    """
+    function plain_values()
+        scalars = Data.OneOf(
+            Data.Integers(-2, 2),
+            map(Int32, Data.Integers(-2, 2)),
+            Data.SampledFrom([0.0, -0.0, 0.5, 1.0, Inf]),
+            Data.Booleans(),
+            Data.SampledFrom(["", "a", "ab", "b"]),
+            Data.SampledFrom([:a, :ab, :b]),
+            Data.SampledFrom(['a', 'b']),
+            Data.Just(nothing),
+            Data.Just(missing),
+        )
+        few(v) = Data.Vectors(v; max_size = 3)
+        extend(v) = Data.OneOf(
+            map(xs -> Any[xs...], few(v)),
+            map(
+                xs -> reshape(Any[xs; xs], 2, :),
+                Data.Vectors(v; min_size = 1, max_size = 2),
+            ),
+            map(xs -> (xs...,), few(v)),
+            map(xs -> NamedTuple{Tuple(Symbol.(:k, eachindex(xs)))}(Tuple(xs)), few(v)),
+            map(Pair, v, v),
+            map(xs -> Dict{Any, Any}(xs), Data.Vectors(Data.Pairs(v, v); max_size = 3)),
+            map(xs -> Set{Any}(xs), few(v)),
+            map((h, xs) -> Expr(h, xs...), Data.SampledFrom([:call, :tuple]), few(v)),
+        )
+        return Data.recursive(extend, scalars; max_layers = 3)
+    end
 end
 
 @testmodule JETChecks begin
