@@ -265,9 +265,14 @@ end
             @test isempty(
                 build(remote_store; executor = DistributedExecutor(pids; script)).built,
             )
-            # a worker running different code is rejected
-            remotecall_eval(Main, pids[1:1], :(empty!(Targets.WORKER_PIPELINES)))
-            remotecall_eval(
+            # a worker running different code is rejected (`remotecall_eval` is
+            # only exported from Julia 1.11)
+            Distributed.remotecall_eval(
+                Main,
+                pids[1:1],
+                :(empty!(Targets.WORKER_PIPELINES)),
+            )
+            Distributed.remotecall_eval(
                 Main,
                 pids[1:1],
                 :(
