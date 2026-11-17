@@ -269,7 +269,7 @@ end
 
     report = @check config = check_config(;
         max_examples = 300,
-    ) function patterns_follow_their_laws(
+    ) rng = property_rng() function patterns_follow_their_laws(
         p = patterns,
         q = patterns,
         r = patterns,
@@ -301,8 +301,10 @@ end
             same(p, Cross(p)),
             same(Map(p, q, r), Map(Map(p, q), r)),
             same(Map(p, q, r), Map(p, Map(q, r))),
-        )) || return false
-        if something(size_of(Cross(p, q, r), n), 0) <= 1000 # products grow fast
+        )) ||
+            return false
+        if something(size_of(Cross(p, q, r), n), 0) <= 1000
+            # products grow fast
             same(Cross(p, q, r), Cross(Cross(p, q), r)) || return false
             same(Cross(p, q, r), Cross(p, Cross(q, r))) || return false
         end

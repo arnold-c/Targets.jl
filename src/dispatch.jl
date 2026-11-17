@@ -503,7 +503,7 @@ end
 
     report = @check config = check_config(;
         max_examples = 40,
-    ) function builds_respect_the_schedule(
+    ) rng = property_rng() function builds_respect_the_schedule(
         spec = sized(spec_target, 8),
         jobs = Data.SampledFrom([1, 2, 4]),
         keep_going = Data.Booleans(),

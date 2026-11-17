@@ -271,7 +271,9 @@ end
     using Targets: open_store, write_object, read_object, canonical_hash, storage_format
     s = open_store(joinpath(mktempdir(), "_targets"))
     # an equal canonical hash means the same types and values throughout
-    report = @check config = check_config(; max_examples = 300) function values_round_trip(
+    report = @check config = check_config(;
+        max_examples = 300,
+    ) rng = property_rng() function values_round_trip(
         x = plain_values(),
         format = Data.SampledFrom([:jld2, :jls]),
     )
@@ -317,7 +319,7 @@ end
     binary = [ArrowFormat(), ArrowFormat(compress = :zstd), ParquetFormat()]
     report = @check config = check_config(;
         max_examples = 150,
-    ) function binary_tables_round_trip(
+    ) rng = property_rng() function binary_tables_round_trip(
         df = tables(false),
         format = Data.SampledFrom(binary),
     )
@@ -326,7 +328,7 @@ end
     @test check_result(report).holds
     report = @check config = check_config(;
         max_examples = 150,
-    ) function csv_tables_round_trip(
+    ) rng = property_rng() function csv_tables_round_trip(
         df = tables(true),
         format = Data.SampledFrom([CSVFormat(), CSVFormat(delim = ';')]),
     )

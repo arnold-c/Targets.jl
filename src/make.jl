@@ -1073,7 +1073,7 @@ end
 
     report = @check config = check_config(;
         max_examples = 8,
-    ) function incremental_equals_clean(
+    ) rng = property_rng() function incremental_equals_clean(
         spec = specs,
         steps = sized(edits, 12),
         jobs = job_counts,

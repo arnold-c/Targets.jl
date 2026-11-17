@@ -65,21 +65,37 @@ end
 @testmodule Properties begin
     using Supposition: Supposition, Data, @check, @composed
     using Random: Xoshiro
-    export Data, @check, @composed, check_config, check_result, sized, plain_values
+    export Data,
+        @check,
+        @composed,
+        check_config,
+        property_rng,
+        check_result,
+        sized,
+        plain_values
 
     """
-        check_config(; max_examples, seed = 1)
+        check_config(; max_examples)
 
-    Options for `@check config = ...`: a fixed seed, so every run tries the same
-    examples (change it to explore others), and no example database in the repo.
-    The report is not recorded in the test set: check it with [`check_result`](@ref).
+    Options for `@check config = ...`: no example database in the repo, and the
+    report is not recorded in the test set (check it with [`check_result`](@ref)).
+    Pass the seed separately, as `rng = property_rng()`.
     """
-    check_config(; max_examples::Int, seed = 1) = Supposition.CheckConfig(;
-        rng = Xoshiro(seed),
+    check_config(; max_examples::Int) = Supposition.CheckConfig(;
+        rng = property_rng(),
         max_examples,
         record = false,
         db = false,
     )
+
+    """
+        property_rng(seed = 1)
+
+    The generator for `@check rng = ...`: a fixed seed, so every run tries the same
+    examples (change it to explore others). It must be passed to `@check` itself:
+    Supposition 0.3 replaces the `rng` of a `config` with a randomly seeded one.
+    """
+    property_rng(seed = 1) = Xoshiro(seed)
 
     """
         check_result(report)

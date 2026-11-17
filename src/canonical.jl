@@ -257,7 +257,11 @@ end
 
     report = @check config = check_config(;
         max_examples = 1000,
-    ) function hash_identifies_values(x = values, y = values, k = Data.Integers(1, 40))
+    ) rng = property_rng() function hash_identifies_values(
+        x = values,
+        y = values,
+        k = Data.Integers(1, 40),
+    )
         h = canonical_hash(x)
         h == canonical_hash(deepcopy(x)) || return false
         h == canonical_hash(reordered(x)) || return false
