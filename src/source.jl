@@ -23,9 +23,9 @@ function parsed_file(path::AbstractString)
     return node
 end
 
-# `#f#12` is the body method of `f` that takes keyword arguments; `#12` and
-# `#f##12` are anonymous functions.
-const KWBODY_NAME = r"^#([A-Za-z_][A-Za-z_0-9!]*)#\d+$"
+# `#f#12` is the body method of `f` that takes keyword arguments (`f#12` for a
+# closure before Julia 1.11); `#12` and `#f##12` are anonymous functions.
+const KWBODY_NAME = r"^#?([A-Za-z_][A-Za-z_0-9!]*)#\d+$"
 
 function definition_name(m::Method)
     s = string(m.name)
@@ -315,12 +315,17 @@ function newest_closure_method(m::Method)
     for n in names(mod; all = true)
         stable_name(n) === own || continue
         for g in closure_methods(GlobalRef(mod, n))
-            (g.name === m.name && _argnames(g) == argnames) || continue
+            (same_method_name(g, m) && _argnames(g) == argnames) || continue
             g.primary_world > newest.primary_world && (newest = g)
         end
     end
     return newest
 end
+
+# Method names up to Julia's counters: before Julia 1.11 a closure's keyword body
+# is named like `f#12`, with a counter that changes each time it is made.
+same_method_name(a::Method, b::Method) = strip_counters(String(a.name)) ==
+    strip_counters(String(b.name))
 
 "Definitions of functions named `name` anywhere in `node`, in source order."
 function collect_named!(out::Vector{Expr}, node::SyntaxNode, name::Symbol)
