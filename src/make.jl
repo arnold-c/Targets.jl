@@ -794,7 +794,8 @@ end
     end
 end
 
-@testitem "tar_make() loads _targets.jl into a fresh module" begin
+@testitem "tar_make() loads _targets.jl into a fresh module" setup = [JETChecks] begin
+    using Targets: build_pipeline, load_pipeline, open_store
     mktempdir() do dir
         script = joinpath(dir, "_targets.jl")
         write(script, "tar_pipeline(target(:x, () -> 41), target(:y, x -> x + 1))\n")
@@ -803,6 +804,23 @@ end
         @test s.built == [:x, :y]
         @test tar_read(:y; store) == 42
         @test isempty(tar_make(; script, store, io = devnull).built)
+        @test_call tar_make(; script, store, io = devnull)
+        # `tar_make(p)` enters the build through `invokelatest`, which JET does
+        # not follow, so check the build itself
+        p = load_pipeline(script)
+        @test_call build_pipeline(p; store, root = dir, io = devnull)
+        @test_call build_pipeline(
+            p;
+            names = [:y],
+            force = true,
+            keep_going = true,
+            jobs = 2,
+            check_mutation = true,
+            store = open_store(store),
+            root = dir,
+            io = devnull,
+            progress = :lines,
+        )
         write(script, "1 + 1\n")
         @test_throws "must end with" tar_make(; script, store, io = devnull)
     end
@@ -943,7 +961,10 @@ end
     end
 end
 
-@testitem "tar_outdated explains what a build would do" setup = [SourceFixtures] begin
+@testitem "tar_outdated explains what a build would do" setup = [
+    SourceFixtures,
+    JETChecks,
+] begin
     mktempdir() do dir
         code(clean) = """
         p = tar_pipeline(
@@ -967,6 +988,11 @@ end
                 (name = :model, reason = :upstream_outdated),
             ]
         @test outdated_source(code("raw + 2"), dir; names = [:raw]) == []
+        m, _ = load_source(code("raw + 2"); dir)
+        p = Base.invokelatest(getproperty, m, :p)
+        store = joinpath(dir, "_targets")
+        @test_call tar_outdated(p; store, root = dir)
+        @test_call tar_outdated(p; names = [:raw], store, root = dir)
     end
 end
 

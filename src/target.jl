@@ -194,13 +194,14 @@ function check_explicit_deps(@nospecialize(f), name::Symbol, deps::Vector{Symbol
     return deps
 end
 
-@testitem "target infers deps from argument names" begin
+@testitem "target infers deps from argument names" setup = [JETChecks] begin
     using Targets: target, arg_names
     named(a, b) = a + b
     @test target(:x, named).deps == [:a, :b]
     @test target(:x, (clean, model) -> 1).deps == [:clean, :model]
     @test target(:x, () -> 1).deps == Symbol[]
     @test arg_names(() -> 1) == Symbol[]
+    @test_call target(:x, named)
 end
 
 @testitem "target accepts explicit deps" begin
@@ -222,7 +223,7 @@ end
     @test_throws "reserved" target(:x, _a -> 1)
 end
 
-@testitem "target validates names and options" begin
+@testitem "target validates names and options" setup = [JETChecks] begin
     using Targets: target
     @test_throws "valid target name" target(Symbol("not valid"), () -> 1)
     @test_throws "valid target name" target(:x, a -> 1; deps = [Symbol("bad dep")])
@@ -234,4 +235,18 @@ end
     @test_throws "slots must be" target(:x, () -> 1; slots = :some)
     @test target(:x, () -> 1; slots = :all).slots === :all
     @test_throws "deployment must be" target(:x, () -> 1; deployment = :thread)
+    @test_call target(
+        :x,
+        a -> 1;
+        deps = [:y],
+        format = :jls,
+        pattern = :y,
+        cue = :always,
+        seed = 3,
+        slots = :all,
+        deployment = :main,
+        error = :continue,
+        retries = 2,
+        retry_delay = 0.5,
+    )
 end

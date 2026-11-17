@@ -556,6 +556,7 @@ end
 
 @testitem "code_hash follows helpers however deeply they are called" setup = [
     CodeFixtures,
+    JETChecks,
 ] begin
     code(; h2 = "x + 1", extra = "") = """
     $extra
@@ -570,6 +571,8 @@ end
         base # formatting and moving
     @test reach(code(; h2 = "x + 2"))[1] != base                  # two calls deep
     @test reach(code(; extra = "unused(x) = x + 100"))[1] == base # unreachable function
+    _, d = reach(code())
+    @test_call Targets.code_hash(d, target(:a, () -> 1))
 end
 
 @testitem "code_hash includes every method of a used function" setup = [CodeFixtures] begin

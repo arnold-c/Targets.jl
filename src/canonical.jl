@@ -157,7 +157,9 @@ end
         "Vector{Union{Symbol, Targets.Pattern}}"
 end
 
-@testitem "canonical hash distinguishes values and ignores ordering of unordered collections" begin
+@testitem "canonical hash distinguishes values and ignores ordering of unordered collections" setup = [
+    JETChecks,
+] begin
     using Targets: canonical_hash
     @test canonical_hash(1) != canonical_hash(1.0)
     @test canonical_hash(1) != canonical_hash(Int32(1))
@@ -171,6 +173,21 @@ end
     @test canonical_hash(["ab", "c"]) != canonical_hash(["a", "bc"]) # length-prefixed
     @test canonical_hash(1 // 2) == canonical_hash(1 // 2)
     @test canonical_hash(nothing) != canonical_hash(missing)
+    @test_call canonical_hash((
+        1,
+        1.0,
+        "a",
+        :a,
+        'c',
+        [1 2; 3 4],
+        Dict(:a => 1),
+        Set([1]),
+        (a = 1,),
+        1 // 2,
+        nothing,
+        missing,
+        :(f(x)),
+    ))
 end
 
 @testitem "canonical hash of expressions ignores line numbers and formatting" begin

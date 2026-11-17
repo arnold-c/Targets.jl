@@ -130,15 +130,16 @@ end
     @test names_for([Spec(1), Spec(2)]; names = (:lo, :hi)) == [:x_lo, :x_hi]
 end
 
-@testitem "tar_map renames dependencies within a branch only" begin
+@testitem "tar_map renames dependencies within a branch only" setup = [JETChecks] begin
     using Targets
-    m = tar_map((:a, :b)) do k
-        (
-            target(:grid, () -> [1, 2]),
-            target(:fit, (raw, grid) -> (k, raw, grid); pattern = :grid),
-            target(:summary, fit -> fit),
-        )
-    end
+    template(k) = (
+        target(:grid, () -> [1, 2]),
+        target(:fit, (raw, grid) -> (k, raw, grid); pattern = :grid),
+        target(:summary, fit -> fit),
+    )
+    m = tar_map(template, (:a, :b))
+    @test_call tar_map(template, (:a, :b))
+    @test_call tar_map(template, (a = 1, b = 2); names = string)
     @test keys(m) == (:grid, :fit, :summary)
     @test [t.name for t in m.fit] == [:fit_a, :fit_b]
     @test m.fit[2].deps == [:raw, :grid_b]
@@ -146,6 +147,7 @@ end
     @test m.summary[1].deps == [:fit_a]
     all = tar_combine(:all, (xs...) -> xs, m.summary)
     @test all.deps == [:summary_a, :summary_b]
+    @test_call tar_combine(:all, (xs...) -> xs, m.summary)
     p = tar_pipeline(target(:raw, () -> 1), m, all)
     @test p.order == [:raw, :grid_a, :grid_b, :fit_a, :fit_b, :summary_a, :summary_b, :all]
 end

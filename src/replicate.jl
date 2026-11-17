@@ -94,7 +94,11 @@ function tar_map_rep(name::Symbol, f, values; batches, reps, names = nothing, kw
     end
 end
 
-@testitem "tar_rep batches replications reproducibly" setup = [SourceFixtures] begin
+@testitem "tar_rep batches replications reproducibly" setup = [
+    SourceFixtures,
+    JETChecks,
+] begin
+    @test_call tar_rep(:draws, scale -> scale * rand(); batches = 2, reps = 3)
     code(batches, reps) = """
     p = tar_pipeline(
         target(:scale, () -> 10),
@@ -115,8 +119,9 @@ end
     end
 end
 
-@testitem "tar_map_rep replicates per value" begin
+@testitem "tar_map_rep replicates per value" setup = [JETChecks] begin
     m = tar_map_rep(:sim, (mu, n) -> mu + n, (a = 1, b = 100); batches = 2, reps = 2)
+    @test_call tar_map_rep(:sim, (mu, n) -> mu + n, (a = 1, b = 100); batches = 2, reps = 2)
     p = tar_pipeline(target(:n, () -> 0.5), m)
     mktempdir() do dir
         store = joinpath(dir, "_targets")

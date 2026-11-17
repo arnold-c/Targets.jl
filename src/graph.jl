@@ -811,6 +811,7 @@ end
 
 @testitem "network_data describes the nodes, edges and labels to draw" setup = [
     GraphFixtures,
+    JETChecks,
 ] begin
     using Targets: network_data
     d = network_data(
@@ -839,5 +840,15 @@ end
             root = dir,
         )
         @test s.statuses == [:unbuilt, :outdated] # as in tar_dot's colours
+        store = joinpath(dir, "_targets")
+        @test_call network_data(
+            diamond();
+            names = [:left],
+            descendants = false,
+            status = true,
+            store,
+            root = dir,
+        )
+        @test_call tar_dot(diamond(); store, root = dir)
     end
 end

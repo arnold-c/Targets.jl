@@ -753,6 +753,7 @@ end
 
 @testitem "a macro pipeline matches the equivalent target() pipeline" setup = [
     MacroFixtures,
+    JETChecks,
 ] begin
     fit(a, b) = a * b
     p = @pipeline begin
@@ -772,6 +773,19 @@ end
     @test Targets.get_target(p, :model).cue == :always
     @test Targets.get_target(p, :model).deps == [:clean, :other]
     @test Targets.get_target(p, :clean).deps == [:raw]
+    block = quote
+        @target raw = 10
+        scale = 2
+        @target model = fit(raw, scale) cue = :always
+    end
+    @test_call Targets.fragment_code(block, @__MODULE__, "@pipeline")
+    @test_call Targets.split_toplevel(@__MODULE__, :(p = @pipeline seed = 1 $block))
+    @test_call tar_pipeline(
+        @targets begin
+            @target raw = 10
+            @target model = fit(raw, 2)
+        end
+    )
 end
 
 @testitem "dependencies ignore field names, keywords and quoted code" setup = [

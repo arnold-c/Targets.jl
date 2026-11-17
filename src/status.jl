@@ -104,7 +104,10 @@ function print_status(io::IO, s::TargetStatus, n::Symbol, width::Int)
     )
 end
 
-@testitem "tar_status lists targets coloured by status" setup = [SourceFixtures] begin
+@testitem "tar_status lists targets coloured by status" setup = [
+    SourceFixtures,
+    JETChecks,
+] begin
     code(b) = """
     p = tar_pipeline(
         target(:a, () -> 1),
@@ -119,6 +122,8 @@ end
         m, _ = load_source(code("a + 2"); dir)
         p = Base.invokelatest(getproperty, m, :p)
         s = tar_status(p; store = joinpath(dir, "_targets"), root = dir)
+        @test_call tar_status(p; store = joinpath(dir, "_targets"), root = dir)
+        @test_call show(IOBuffer(), MIME("text/plain"), s)
         @test s.status ==
             Dict(
                 :a => :uptodate,

@@ -288,11 +288,12 @@ selected_order(p::Pipeline, names) = ancestors(p, as_names(names))
     @test tar_pipeline(target(:x, () -> 1), target(:y, () -> 1)).order == [:x, :y]
 end
 
-@testitem "pipeline flattens nested collections" begin
+@testitem "pipeline flattens nested collections" setup = [JETChecks] begin
     using Targets
     fits = [target(Symbol(:fit_, m), () -> m) for m in (:ols, :lasso)]
     p = tar_pipeline(target(:data, () -> 1), fits, (target(:z, () -> 1),))
     @test p.order == [:data, :fit_ols, :fit_lasso, :z]
+    @test_call tar_pipeline(target(:data, () -> 1), fits, (target(:z, () -> 1),); seed = 2)
     @test_throws ArgumentError tar_pipeline(1)
 end
 

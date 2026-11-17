@@ -940,7 +940,7 @@ end
     end
 end
 
-@testitem "tar_quarto validates its document and options" begin
+@testitem "tar_quarto validates its document and options" setup = [JETChecks] begin
     using Targets: expected_outputs
     mktempdir() do dir
         qmd(name, text = "Hi\n") = (path = joinpath(dir, name); write(path, text); path)
@@ -951,6 +951,8 @@ end
             isempty(t.deps) &&
             t.seed === nothing
         @test expected_outputs(t.f) == [joinpath(dir, "summary.html")]
+        @test_call tar_quarto(a)
+        @test_call tar_quarto(:x, a; deps = [:name], params = (n = 1,), quiet = false)
         @test expected_outputs(tar_quarto(a; quarto_args = ["--to", "pdf"]).f) ==
             [joinpath(dir, "summary.pdf")]
         b = qmd("multi.qmd", "---\nformat:\n  html: default\n  docx: default\n---\n")

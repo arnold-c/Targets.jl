@@ -216,6 +216,7 @@ end
 
 @testitem "command_hash ignores formatting and tracks edits to the function" setup = [
     SourceFixtures,
+    JETChecks,
 ] begin
     using Targets: command_hash
     code(body, extra = "") = """
@@ -230,6 +231,7 @@ end
     @test h(m1).kind == :source
     @test h(m1) == h(m2)
     @test h(m1).hash != h(m3).hash
+    @test_call command_hash(m1.t)
 end
 
 @testitem "command_hash separates lambdas on neighbouring lines of one pipeline call" setup = [
@@ -337,7 +339,9 @@ end
     @test command_hash(t).kind == :source
 end
 
-@testitem "value hashes use the object file unless a hook is defined" begin
+@testitem "value hashes use the object file unless a hook is defined" setup = [
+    JETChecks,
+] begin
     using Targets: Targets, hash_file, object_hash, open_store, write_object, object_path
     struct Wrapped
         x::Int
@@ -353,5 +357,6 @@ end
         @test h(:a, [1, 2, 3]) != h(:c, [1, 2, 4])
         @test h(:a, Wrapped(1)) == h(:b, Wrapped(1))
         @test h(:a, Wrapped(1)) != h(:a, Wrapped(2))
+        @test_call object_hash([1, 2, 3], object_path(s, :a))
     end
 end

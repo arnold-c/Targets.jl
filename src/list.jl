@@ -198,8 +198,13 @@ end
     @test one == "Constants (1)\n  other\nComputations (1)\n  other_summary"
 end
 
-@testitem "tar_list selects targets by name like tar_dot" setup = [ListFixtures] begin
+@testitem "tar_list selects targets by name like tar_dot" setup = [
+    ListFixtures,
+    JETChecks,
+] begin
     p = listed()
+    @test_call tar_list(p; names = [:beta], descendants = true)
+    @test_call show(IOBuffer(), MIME("text/plain"), tar_list(p))
     l = tar_list(p; names = [:beta])
     @test only(l.components).computations == [:clean, :beta]
     l = tar_list(p; names = [:beta], descendants = true)

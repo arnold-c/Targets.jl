@@ -321,7 +321,9 @@ end
     @test_throws "error must be" target(:x, () -> 1; error = :ignore)
 end
 
-@testitem "failures keep a traceback of the user's frames; warnings are recorded" begin
+@testitem "failures keep a traceback of the user's frames; warnings are recorded" setup = [
+    JETChecks,
+] begin
     using Targets: read_meta, open_store
     inner(x) = x > 0 ? error("deep") : x
     outer(x) = inner(x) + 1
@@ -344,6 +346,8 @@ end
         @test any(f -> occursin("inner", f), tb) && any(f -> occursin("outer", f), tb)
         @test !any(f -> occursin("call_target", f) || occursin("execute", f), tb)
         @test only(tar_errored(; store)).name == "bad"
+        @test_call tar_traceback(:bad; store)
+        @test_call tar_errored(; store)
         # a macro target's traceback ends at its own line, not in Targets
         q = @pipeline begin
             @target w = 1
@@ -368,7 +372,7 @@ end
     end
 end
 
-@testitem "a failed target leaves a workspace to rerun it from" begin
+@testitem "a failed target leaves a workspace to rerun it from" setup = [JETChecks] begin
     mktempdir() do dir
         store = joinpath(dir, "_targets")
         p(fail) = tar_pipeline(
@@ -388,6 +392,8 @@ end
             e
         end
         @test sprint(showerror, rerun) == sprint(showerror, err) # same seed, same error
+        @test_call tar_workspace(:y; store)
+        @test_call tar_rerun(bad, :y; store, root = dir)
         ws = @tar_workspace y store = store
         # a new global is only visible to code compiled afterwards, as at the REPL
         @test Base.invokelatest(getproperty, @__MODULE__, :x) == [1, 2, 3] == ws.x

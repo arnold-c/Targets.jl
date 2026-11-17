@@ -5,11 +5,10 @@ using TestItemRunner
     Aqua.test_all(Targets)
 end
 
-# JET is tied to specific Julia versions, so only run it on stable releases
-# recent enough for the JET versions allowed in test/Project.toml. CI removes
-# JET from the test environment on older Julia versions (see CI.yml).
-@testitem "Code linting (JET.jl)" tags = [:quality] begin
-    if VERSION >= v"1.12" && isempty(VERSION.prerelease)
+# Analyses every method for its declared argument types. Unit tests check the
+# calls they make with JETChecks' `@test_call`, which this misses.
+@testitem "Code linting (JET.jl)" tags = [:quality] setup = [JETChecks] begin
+    if JET_ENABLED
         using JET
         JET.test_package(Targets; target_modules = (Targets,))
     end

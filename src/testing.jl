@@ -43,3 +43,42 @@
         names,
     )
 end
+
+@testmodule JETChecks begin
+    using Targets: Targets
+    using TOML: TOML
+    export JET_ENABLED, @test_call
+
+    # JET is tied to specific Julia versions, so it only runs on stable releases
+    # recent enough for the JET versions allowed in test/Project.toml. CI removes
+    # JET from the test environment on older Julia versions (see CI.yml).
+    const JET_ENABLED = VERSION >= v"1.12" && isempty(VERSION.prerelease)
+    if JET_ENABLED
+        using JET: JET
+    end
+
+    # Targets and its extensions (by name: they need not be loaded).
+    const TARGET_MODULES = (
+        Targets,
+        Symbol.(keys(TOML.parsefile(pkgdir(Targets, "Project.toml"))["extensions"]))...,
+    )
+
+    """
+        @test_call [broken = false] [skip = false] f(args...; kwargs...)
+
+    `JET.@test_call`, reporting only problems in the code of Targets and its
+    extensions; does nothing where JET does not run. `JET.test_package` analyses
+    each method once, for its declared argument types, so it misses what only
+    happens with the concrete types a real call passes; this analyses that call.
+    """
+    macro test_call(args...)
+        JET_ENABLED || return nothing
+        return esc(Expr(
+            :macrocall,
+            GlobalRef(JET, Symbol("@test_call")),
+            __source__,
+            :(target_modules = $TARGET_MODULES),
+            args...,
+        ))
+    end
+end

@@ -175,7 +175,9 @@ recorded_format(name::AbstractString) = resolve_format(Symbol(name))
     end
 end
 
-@testitem "table formats round-trip and write identical bytes for identical tables" begin
+@testitem "table formats round-trip and write identical bytes for identical tables" setup = [
+    JETChecks,
+] begin
     using Arrow, CSV, Parquet2, DataFrames
     using Targets:
         open_store,
@@ -201,6 +203,8 @@ end
             second_path = write_object(s, "second$i", df; format)
             @test hash_file(first_path) == hash_file(second_path)
             @test DataFrame(read_object(s, "first$i")) == df
+            @test_call write_object(s, "first$i", df; format)
+            @test_call read_object(s, "first$i")
         end
     end
 end

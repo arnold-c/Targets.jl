@@ -342,11 +342,14 @@ end
 
 @testitem "@tar_load assigns in the caller's scope, including inside functions and modules" setup = [
     StoreFixtures,
+    JETChecks,
 ] begin
     mktempdir() do dir
         p, store = built_store(dir)
         @tar_load store = store x y
         @test (x, y) == (1, 2)
+        @test_call Targets.read_targets([:x, :y]; store) # what @tar_load calls
+        @test_call Targets.var"@tar_load"(LineNumberNode(1), @__MODULE__, :(store = s), :x)
         function in_function(store)
             @tar_load store = store z
             return z
@@ -362,10 +365,13 @@ end
 
 @testitem "reading an outdated target warns, errors or is ignored" setup = [
     StoreFixtures,
+    JETChecks,
 ] begin
     mktempdir() do dir
         p, store = built_store(dir)
         @test (@test_logs tar_read(:y; store)) == 2 # up to date: silent
+        @test_call tar_read(:y; store)
+        @test_call tar_read(:y; store, on_outdated = :error)
         tar_invalidate(; names = :y, store)
         @test (@test_logs (:warn, r"`y` \(missing\)") tar_read(:y; store)) == 2
         @test_throws "`y` (missing)" tar_read(:y; store, on_outdated = :error)
@@ -382,6 +388,7 @@ end
 
 @testitem "reads are checked against the pipeline script, so code edits count" setup = [
     SourceFixtures,
+    JETChecks,
 ] begin
     mktempdir() do dir
         code(k) = """
@@ -391,6 +398,7 @@ end
         store = joinpath(dir, "_targets")
         script = joinpath(dir, "src.jl")
         @test (@test_logs tar_read(:y; store, script)) == 2
+        @test_call tar_read(:y; store, script)
         write(script, code(5))
         @test (
             @test_logs (:warn, r"`y` \(upstream_outdated\)") tar_read(:y; store, script)
@@ -426,7 +434,7 @@ end
     end
 end
 
-@testitem "tar_manifest lists targets without touching the store" begin
+@testitem "tar_manifest lists targets without touching the store" setup = [JETChecks] begin
     p = tar_pipeline(
         target(:a, () -> 1),
         target(:b, a -> a; cue = :always, slots = :all, deployment = :main),
@@ -452,10 +460,12 @@ end
                 deployment = :main,
             ),
         ]
+    @test_call tar_manifest(p)
 end
 
 @testitem "tar_invalidate keeps the object but forces a rebuild; tar_delete removes both" setup = [
     StoreFixtures,
+    JETChecks,
 ] begin
     using Targets: open_store, has_object, read_meta
     mktempdir() do dir
@@ -470,6 +480,8 @@ end
         @test !has_object(s, :y) && !has_object(s, :z)
         @test read_meta(s, :z) === nothing
         @test tar_make(p; store, root = dir, io = devnull).built == [:y, :z]
+        @test_call tar_invalidate(; names = [:y], store)
+        @test_call tar_delete(; names = [:y, :z], store)
     end
 end
 
@@ -512,6 +524,7 @@ end
 
 @testitem "tar_invalidate without names invalidates the whole pipeline" setup = [
     StoreFixtures,
+    JETChecks,
 ] begin
     using Targets: open_store, meta_keys
     mktempdir() do dir
@@ -525,10 +538,14 @@ end
         @test tar_make(p; store, root = dir, io = devnull).built == [:x, :y, :z]
         tar_invalidate(; store, ask = false)
         @test isempty(meta_keys(open_store(store)))
+        @test_call tar_invalidate(; store, input = IOBuffer("n\n"), io = devnull)
     end
 end
 
-@testitem "tar_prune removes targets that left the pipeline" setup = [StoreFixtures] begin
+@testitem "tar_prune removes targets that left the pipeline" setup = [
+    StoreFixtures,
+    JETChecks,
+] begin
     using Targets: open_store, has_object, stored_names
     mktempdir() do dir
         p, store = built_store(dir)
@@ -537,11 +554,13 @@ end
         @test stored_names(open_store(store)) == [:x]
         @test tar_read(:x; store) == 1
         @test isempty(tar_prune(smaller; store))
+        @test_call tar_prune(smaller; store)
     end
 end
 
 @testitem "tar_destroy asks before deleting a store, and only deletes stores" setup = [
     StoreFixtures,
+    JETChecks,
 ] begin
     mktempdir() do dir
         p, store = built_store(dir)
@@ -552,5 +571,6 @@ end
         @test !tar_destroy(; store, ask = false) # nothing left to delete
         plain = mkpath(joinpath(dir, "not_a_store"))
         @test_throws "does not look like" tar_destroy(; store = plain, ask = false)
+        @test_call tar_destroy(; store, input = IOBuffer("n\n"), io = devnull)
     end
 end

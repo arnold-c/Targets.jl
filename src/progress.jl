@@ -156,6 +156,7 @@ end
 
 @testitem "a run's events record what happened, and tar_progress reads them" setup = [
     SourceFixtures,
+    JETChecks,
 ] begin
     using Targets: read_events
     code = """
@@ -187,6 +188,8 @@ end
         io = IOBuffer()
         tar_poll(; store = joinpath(dir, "_targets"), io)
         @test occursin("5 built", String(take!(io))) # good, grid, fits and its two branches
+        @test_call tar_progress(; store = joinpath(dir, "_targets"))
+        @test_call tar_poll(; store = joinpath(dir, "_targets"), io)
         build_source(code, dir; keep_going = true)
         @test length(unique(
             e.run_id

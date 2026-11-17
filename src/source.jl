@@ -411,6 +411,7 @@ end
 
 @testitem "method_source finds named functions and ignores formatting" setup = [
     SourceFixtures,
+    JETChecks,
 ] begin
     using Targets: method_source, canonical_hash
     m, path = load_source(
@@ -439,6 +440,7 @@ end
     )
     @test canonical_hash(method_source(only(methods(m2.g)))) == canonical_hash([g])
     @test canonical_hash(method_source(only(methods(m2.f)))) == canonical_hash([f])
+    @test_call method_source(only(methods(m.f)))
 end
 
 @testitem "method_source distinguishes methods of one function by line" setup = [

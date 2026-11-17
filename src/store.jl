@@ -338,7 +338,7 @@ function meta_row(s::Store, key)
     return (; name = key, (f => getfield(r, f) for f in fieldnames(Record))...)
 end
 
-@testitem "open_store creates a versioned layout and validates it" begin
+@testitem "open_store creates a versioned layout and validates it" setup = [JETChecks] begin
     using Targets: open_store, STORE_FORMAT_VERSION
     using TOML
     mktempdir() do dir
@@ -351,12 +351,13 @@ end
         @test TOML.parsefile(joinpath(root, "store.toml"))["format_version"] ==
             STORE_FORMAT_VERSION
         @test open_store(root).root == s.root # reopening is fine
+        @test_call open_store(root)
         write(joinpath(root, "store.toml"), "format_version = 999\n")
         @test_throws "format version" open_store(root)
     end
 end
 
-@testitem "objects round-trip through JLD2" begin
+@testitem "objects round-trip through JLD2" setup = [JETChecks] begin
     using Targets: open_store, write_object, read_object, has_object, delete_object
     mktempdir() do dir
         s = open_store(joinpath(dir, "_targets"))
@@ -371,7 +372,9 @@ end
             write_object(s, k, v)
             @test has_object(s, k)
             @test read_object(s, k) == v
+            @test_call write_object(s, k, v)
         end
+        @test_call read_object(s, :nt)
         write_object(s, "fits/1a2b3c4d", 42) # branch-style key
         @test read_object(s, "fits/1a2b3c4d") == 42
         delete_object(s, :nt)
@@ -399,7 +402,7 @@ end
     end
 end
 
-@testitem "metadata round-trips and tar_meta assembles a table" begin
+@testitem "metadata round-trips and tar_meta assembles a table" setup = [JETChecks] begin
     using Targets:
         open_store,
         write_meta,
@@ -426,6 +429,9 @@ end
         @test map(row -> row.name, table) == ["fits/1a2b3c4d", "model"]
         @test table[2].command_hash == "abc"
         @test table[2].dep_hashes == Dict("clean" => "123")
+        @test_call write_meta(s, :model, r)
+        @test_call read_meta(s, :model)
+        @test_call tar_meta(; store = s)
         delete_meta(s, :model)
         @test meta_keys(s) == ["fits/1a2b3c4d"]
     end

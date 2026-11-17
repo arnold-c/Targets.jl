@@ -383,6 +383,8 @@ target and branch, and `tar_poll()` prints a summary every few seconds until it 
 ## Development
 
 Tests are `@testitem`s that live next to the code in `src/`, with Aqua and JET
-checks in `test/runtests.jl`. Run them with `juliati` (`juliati --filter ...` for
-one item or file). The design is described in [`plan.md`](plan.md), the user guide
+checks in `test/runtests.jl`. Unit tests also run JET on the calls they make
+with `@test_call` from the `JETChecks` test module (`src/testing.jl`), which
+catches what `JET.test_package` misses with only declared argument types. Run
+them with `juliati` (`juliati --filter ...` for one item or file). The design is described in [`plan.md`](plan.md), the user guide
 lives in `docs/`, and runnable demos in [`examples/`](examples/README.md).
