@@ -157,12 +157,13 @@ captured_value(x::Function) = is_generated_function_type(typeof(x)) ?
     type_string(typeof(x))
 captured_value(x) = x
 
+# By name: the order of a closure's fields is up to lowering, and differs, for
+# example, between a block's macro expansion and the same block run a line at a
+# time.
 function closure_captures(f)
     nfields(f) == 0 && return ()
-    return Tuple(
-        fieldname(typeof(f), i) => captured_value(getfield(f, i))
-        for i in 1:nfields(f)
-    )
+    names = sort!(collect(fieldnames(typeof(f))))
+    return Tuple(n => captured_value(getfield(f, n)) for n in names)
 end
 # A `@target`'s variables from enclosing scopes (such as a `@map` argument) are
 # captured by its body or, when the target might have named a target instead,
@@ -280,6 +281,14 @@ end
     h = [command_hash(t).hash for t in m.fits]
     @test h[1] != h[2]
     @test h == [command_hash(t).hash for t in m.again]
+end
+
+@testitem "closure captures are recorded by name, whatever order the closure holds them in" begin
+    using Targets: closure_captures
+    f = let z = 1, a = 2
+        () -> z + a
+    end
+    @test closure_captures(f) == (:a => 2, :z => 1)
 end
 
 @testitem "command_hash falls back to lowered code without source" begin
