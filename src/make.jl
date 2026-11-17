@@ -998,9 +998,8 @@ end
 
 @testitem "oracle: incremental builds always equal a clean build" setup = [
     SourceFixtures,
+    Properties,
 ] begin
-    using Supposition: Supposition, Data, @check, @composed
-    using Random: Xoshiro
     # A target is a small integer function of its dependencies. Random edits change
     # a coefficient, the shared modulus, or only the formatting or operand order,
     # so some edits change outputs, some change code only, and some change nothing.
@@ -1021,13 +1020,6 @@ end
         push!(lines, ")")
         return join(lines, "\n") * "\n"
     end
-    # Vectors of `n` values of `gen`, with `n` uniform in `1:most` (`Data.Vectors`
-    # favours short ones). `n` is drawn after the values, so it shrinks on its own.
-    sized(gen, most) = map(
-        (xs, n) -> xs[1:n],
-        Data.Vectors(gen; min_size = most, max_size = most),
-        Data.Integers(1, most),
-    )
     job_counts = Data.SampledFrom([1, 4])
 
     Target3 = NamedTuple{(:deps, :a, :b, :swap), Tuple{Vector{Int}, Int, Int, Bool}}
@@ -1079,10 +1071,9 @@ end
         return read_values(dir, names...) == read_values(clean, names...)
     end
 
-    # A fixed seed, so every run tries the same examples; change it to explore others.
-    # The report is checked here rather than recorded: the test item runner finishes
-    # its test set in a world that predates `using Supposition`, so it counts none.
-    report = @check max_examples = 8 db = false record = false rng = Xoshiro(1) function incremental_equals_clean(
+    report = @check config = check_config(;
+        max_examples = 8,
+    ) function incremental_equals_clean(
         spec = specs,
         steps = sized(edits, 12),
         jobs = job_counts,
@@ -1095,7 +1086,7 @@ end
         end
         return true
     end
-    @test Supposition.results(report).ispass
+    @test passed(report)
 end
 
 @testitem "values are dropped from memory once their last consumer has run" setup = [

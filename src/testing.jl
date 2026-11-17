@@ -44,6 +44,48 @@
     )
 end
 
+@testmodule Properties begin
+    using Supposition: Supposition, Data, @check, @composed
+    using Random: Xoshiro
+    export Data, @check, @composed, check_config, passed, sized
+
+    """
+        check_config(; max_examples, seed = 1)
+
+    Options for `@check config = ...`: a fixed seed, so every run tries the same
+    examples (change it to explore others), and no example database in the repo.
+    The report is not recorded in the test set: check it with [`passed`](@ref).
+    """
+    check_config(; max_examples::Int, seed = 1) = Supposition.CheckConfig(;
+        rng = Xoshiro(seed),
+        max_examples,
+        record = false,
+        db = false,
+    )
+
+    """
+        passed(report)
+
+    Whether the property `@check` returned `report` for held. Assert it with
+    `@test`: the test item runner finishes its test set in a world that predates
+    `using Supposition`, so a recorded report would count as no tests, and its
+    failures would pass silently.
+    """
+    passed(report) = Supposition.results(report).ispass
+
+    """
+        sized(gen, most)
+
+    Vectors of `n` values of `gen`, with `n` uniform in `1:most` (`Data.Vectors`
+    favours short ones). `n` is drawn after the values, so it shrinks on its own.
+    """
+    sized(gen, most) = map(
+        (xs, n) -> xs[1:n],
+        Data.Vectors(gen; min_size = most, max_size = most),
+        Data.Integers(1, most),
+    )
+end
+
 @testmodule JETChecks begin
     using Targets: Targets
     using TOML: TOML
