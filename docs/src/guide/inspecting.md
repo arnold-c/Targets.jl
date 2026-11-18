@@ -25,6 +25,7 @@ Set defaults for a project in its `LocalPreferences.toml`:
 on_outdated = "error"            # or "warn" (default), "ignore"
 store = "/scratch/me/_targets"   # the default store, relative to the project root
 jobs = "auto"                    # tar_make's default jobs: a number, or "auto"
+on_error = "continue"            # or "stop" (default): tar_make's default keep_going
 ```
 
 ## Helpers

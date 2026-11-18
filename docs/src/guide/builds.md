@@ -81,7 +81,17 @@ and what targets must avoid when they run concurrently.
 ## Errors and retries
 
 By default an error stops the build: nothing new starts, jobs that are already running
-finish and are recorded, and then the error is rethrown. Interrupting a build (Ctrl-C)
+finish and are recorded, and then the error is rethrown. With `keep_going = true`, targets
+that do not depend on a failed one are still built, the failed targets' descendants are
+blocked, and nothing is rethrown: the [`BuildSummary`](@ref) lists what failed. To make
+that the default for a project, set the `on_error` preference in its
+`LocalPreferences.toml` (an explicit `keep_going` still wins):
+
+```toml
+[Targets]
+on_error = "continue"   # or "stop" (the default)
+```
+ Interrupting a build (Ctrl-C)
 stops it the same way, except that results arriving after the interrupt are not recorded;
 running jobs cannot be killed, so interrupt again to stop waiting for them. A target's
 `error` option changes what its failure does:

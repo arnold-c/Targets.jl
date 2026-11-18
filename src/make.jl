@@ -237,9 +237,31 @@ function manifest_forced(store::Store, root::AbstractString, selected, track_man
     return Symbol[]
 end
 
+const ON_ERROR = ("stop", "continue")
+
+"""
+    on_error_preference()
+
+What a failure does in a [`tar_make`](@ref) without `keep_going`: the
+`on_error` preference of Targets (e.g. in `LocalPreferences.toml`), `:stop`
+(the default) or `:continue`.
+"""
+function on_error_preference()
+    mode = Preferences.load_preference(@__MODULE__, "on_error", "stop")
+    mode in ON_ERROR && return Symbol(mode)
+    throw(ArgumentError(
+        "the `on_error` preference of Targets must be one of $ON_ERROR, got `$(repr(mode))`",
+    ))
+end
+
+"`keep_going` as given to `tar_make`, or from the `on_error` preference when it is `nothing` (only then is the preference read)."
+chosen_keep_going(keep_going) = keep_going === nothing ?
+    on_error_preference() === :continue :
+    keep_going
+
 """
     tar_make(p::Pipeline; names = nothing, force = false, store = default_store_path(),
-             root = nothing, keep_going = false, track_manifest = false,
+             root = nothing, keep_going = nothing, track_manifest = false,
              check_stale = true, jobs = nothing, executor = nothing,
              check_mutation = false,
              io = stdout, progress = :auto)
@@ -248,8 +270,16 @@ Build the targets of `p` that are outdated, in dependency order, and return a
 [`BuildSummary`](@ref). With `names`, only those targets and everything they
 depend on are considered. With `force = true`, all of those are rebuilt whatever
 their status. An error stops the run and is rethrown, unless `keep_going` is
-set, in which case independent targets are still built and the failure is
-reported in the summary.
+set, in which case independent targets are still built, the failed targets'
+descendants are blocked, and the failures are reported in the summary. Without
+`keep_going`, it is the `on_error` preference of Targets: `"stop"` (the
+default) or `"continue"` (keep going). Set it for a project in
+`LocalPreferences.toml`:
+
+```toml
+[Targets]
+on_error = "continue"
+```
 
 Targets that need no build never wait for a job: every target that is up to
 date is reported before the first job starts, and a target whose upstream was
@@ -317,7 +347,7 @@ function build_pipeline(
     force::Bool = false,
     store::Union{Store, AbstractString} = default_store_path(),
     root::Union{Nothing, AbstractString} = nothing,
-    keep_going::Bool = false,
+    keep_going::Union{Nothing, Bool} = nothing,
     track_manifest::Bool = false,
     check_stale::Bool = true,
     jobs::Union{Nothing, Integer, Symbol} = nothing,
@@ -328,6 +358,7 @@ function build_pipeline(
     observe::Function = ctx -> nothing,
 )
     exec = executor === nothing ? TaskExecutor(chosen_jobs(jobs)) : executor
+    continues = chosen_keep_going(keep_going)
     slots = capacity(exec)
     rootdir = something(root, project_root())
     s = store isa Store ? store : open_store(store)
@@ -360,7 +391,10 @@ function build_pipeline(
             cd(rootdir) do
                 start!(exec, ctx)
                 try
-                    showing(() -> run_jobs!(ctx, queue, exec; keep_going), ctx.display)
+                    showing(
+                        () -> run_jobs!(ctx, queue, exec; keep_going = continues),
+                        ctx.display,
+                    )
                 finally
                     stop!(exec)
                 end
@@ -457,7 +491,7 @@ function tar_make_fresh(
     force::Bool = false,
     store::Union{Store, AbstractString} = default_store_path(),
     root::Union{Nothing, AbstractString} = nothing,
-    keep_going::Bool = false,
+    keep_going::Union{Nothing, Bool} = nothing,
     track_manifest::Bool = false,
     check_stale::Bool = true,
     jobs::Union{Nothing, Integer, Symbol} = nothing,
@@ -476,7 +510,7 @@ function tar_make_fresh(
         force = $(repr(force)),
         store = $(repr(store_path)),
         root = $(repr(root === nothing ? nothing : String(root))),
-        keep_going = $(repr(keep_going)),
+        keep_going = $(repr(chosen_keep_going(keep_going))),
         track_manifest = $(repr(track_manifest)),
         check_stale = $(repr(check_stale)),
         jobs = $(repr(chosen_jobs(jobs))),
@@ -791,6 +825,49 @@ end
         @test s.blocked == [:after_bad]
         @test s.built == [:good, :after_good]
         @test read_values(dir, :after_good) == (2,)
+    end
+end
+
+@testitem "the on_error preference decides whether a build keeps going" setup = [
+    SourceFixtures,
+] begin
+    using Targets: on_error_preference, chosen_keep_going
+    @test on_error_preference() == :stop
+    @test chosen_keep_going(nothing) == false
+    code = """
+    p = tar_pipeline(
+        target(:bad, () -> error("nope")),
+        target(:good, () -> 1),
+    )
+    """
+    mktempdir() do dir
+        write(
+            joinpath(dir, "Project.toml"),
+            "[deps]\nTargets = \"ccd79084-dcf1-4aa0-8fea-6744ff5e7af6\"\n",
+        )
+        prefer(value) = write(
+            joinpath(dir, "LocalPreferences.toml"),
+            "[Targets]\non_error = $value\n",
+        )
+        pushfirst!(LOAD_PATH, dir)
+        try
+            prefer("\"continue\"")
+            @test on_error_preference() == :continue
+            s = build_source(code, mktempdir())
+            @test s.errored == [:bad] && s.built == [:good]
+            # an explicit `keep_going` wins over the preference
+            @test_throws "nope" build_source(code, mktempdir(); keep_going = false)
+            prefer("\"stop\"")
+            @test_throws "nope" build_source(code, mktempdir())
+            for bad in ("\"ignore\"", "true")
+                prefer(bad)
+                @test_throws "the `on_error` preference of Targets" on_error_preference()
+            end
+            # an explicit `keep_going` never reads the (here invalid) preference
+            @test chosen_keep_going(true) && !chosen_keep_going(false)
+        finally
+            popfirst!(LOAD_PATH)
+        end
     end
 end
 

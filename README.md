@@ -250,7 +250,8 @@ parameters are not supported.
 - `names = [:model]` builds those targets and everything they depend on; a `tar_map`
   template name stands for all of its targets.
 - `force = true` rebuilds the selection (or everything) whatever its status.
-- `keep_going = true` carries on with independent targets after a failure.
+- `keep_going = true` carries on with independent targets after a failure; the default
+  is the project's `on_error` preference (see below), else `false`.
 - `fresh = true` builds in a new Julia process with the same project, so nothing from
   your session (code loaded before you edited it, globals or methods changed at the REPL,
   packages the script does not load) can affect the results. It costs a Julia start-up
@@ -362,6 +363,7 @@ target and branch, and `tar_poll()` prints a summary every few seconds until it 
   on_outdated = "error"   # or "warn" (default), "ignore"
   store = "/scratch/me/_targets"   # the default store, relative to the project root
   jobs = "auto"   # tar_make's default jobs: a number, or "auto" (Threads.nthreads(:default))
+  on_error = "continue"   # or "stop" (default): whether tar_make keeps going after a failure
   ```
 
 - Put functions and types in a **named module or package**. Values are stored with

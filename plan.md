@@ -714,6 +714,8 @@ read_value(::JLD2Format, path) = JLD2.load(path, "value")
 
 *Status (15.1): implemented (`error` option on `target`; `stops_build`/`null_value!` in make.jl; trimming in `finish_branching!`). A `:null` target's consumers see a fixed placeholder value hash, so they rebuild once it succeeds. A trimmed target's record lists `trimmed` ids and carries an error message, which keeps it `:errored` (and thus retried) until no branch fails; `BuildSummary.trimmed` lists the ids, and the target itself counts as built.*
 
+*The default of `keep_going` comes from the `on_error` preference of Targets (`LocalPreferences.toml`, `"stop"` or `"continue"`), else `"stop"`; it is read only when `tar_make` gets no `keep_going`, and `fresh = true` resolves it before starting the subprocess.*
+
 **15.2 Retries.** `retries = 0` and `retry_delay = 0` per target, for flaky I/O and cluster nodes. Each attempt is logged, only the last error is recorded, `InterruptException` is never retried, and each attempt uses the same seed (so retrying a deterministic failure is pointless; document this).
 
 *Status (15.2): implemented. `execute` retries inside the job, so a retry holds its slots and never re-enters the scheduler; failed attempts travel in `JobResult.retried` and are logged at commit (`↻ key attempt n failed, retrying: ...`). An argument-loading error is never retried.*
