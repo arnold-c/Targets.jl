@@ -644,7 +644,7 @@ end
 # Record the failure but leave the last good object in place.
 function record_failure!(ctx::BuildContext, t::Target, e; key = t.name, backtrace = nothing)
     previous = something(read_meta(ctx.store, key), Record(; format = record_format(t)))
-    message = first(sprint(showerror, e), 2000)
+    message = error_message(e)
     write_meta(
         ctx.store,
         key,

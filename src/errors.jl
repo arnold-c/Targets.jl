@@ -1,6 +1,9 @@
 ## Error handling: error modes (see the `error` option of `target`) and
 ## workspaces, which save what is needed to reproduce a failed call.
 
+"The message of error `e` as recorded in a target's metadata: at most `limit` characters."
+error_message(e; limit::Int = 2000) = first(sprint(showerror, e), limit)
+
 """
     user_frames(backtrace)
 
@@ -148,7 +151,7 @@ function save_workspace!(s::Store, r::JobResult)
             tmp;
             args = NamedTuple{Tuple(names)}(Tuple(args)),
             seed = job.seed,
-            error = first(sprint(showerror, r.exception), 2000),
+            error = error_message(r.exception),
             backtrace = r.backtrace === nothing ?
                 "" :
                 sprint(Base.show_backtrace, r.backtrace),

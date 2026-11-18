@@ -97,7 +97,7 @@ function execute(job::Job)
                 (getfield(r, f) for f in fieldnames(JobResult) if f !== :retried)...,
                 retried,
             )
-        push!(retried, first(sprint(showerror, r.exception), 200))
+        push!(retried, error_message(r.exception; limit = 200))
         sleep(job.target.retry_delay)
     end
 end

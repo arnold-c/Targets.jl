@@ -39,7 +39,7 @@ start_line(job::Job) = "▶ $(job.key) ($(job.reason))"
 
 "The log line of a finished job: green when it was built, red when it failed."
 done_line(r::JobResult) = failed(r) ?
-    styled"{error:✖ $(r.job.key): $(first(sprint(showerror, r.exception), 200))}" :
+    styled"{error:✖ $(r.job.key): $(error_message(r.exception; limit = 200))}" :
     styled"{success:✔ $(r.job.key) $(round(r.seconds; digits = 2))s ($(r.job.reason))}"
 
 ## The display interface, and plain lines

@@ -195,7 +195,7 @@ function run_remote(
         "",
         (;),
         r.seconds,
-        first(sprint(showerror, r.exception), 2000),
+        error_message(r.exception),
         user_frames(r.backtrace),
         r.retried,
     )
