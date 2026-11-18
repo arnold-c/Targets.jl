@@ -12,6 +12,11 @@ Targets.write_value(::ParquetFormat, path::AbstractString, value) = Parquet2.wri
     value,
 )
 
-Targets.read_value(::ParquetFormat, path::AbstractString) = Parquet2.Dataset(path)
+# Read into memory rather than memory-mapping: Windows cannot remove or replace
+# a mapped file, so a read object would block its own rebuild.
+Targets.read_value(::ParquetFormat, path::AbstractString) = Parquet2.Dataset(
+    path;
+    use_mmap = false,
+)
 
 end

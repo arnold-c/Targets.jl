@@ -95,7 +95,8 @@ const DEFAULT_FORMAT = JLD2Format()
     ArrowFormat(; compress = nothing)
 
 Arrow IPC files, for any Tables.jl table; `compress` may be `:lz4` or `:zstd`.
-Needs `using Arrow`. Reading returns a memory-mapped `Arrow.Table`; use
+Needs `using Arrow`. Reading returns an `Arrow.Table` read into memory (not
+memory-mapped, so the file can be replaced on Windows); use
 `DataFrame(tar_read(:x))` or `copy` for a mutable table.
 """
 Base.@kwdef struct ArrowFormat <: StorageFormat

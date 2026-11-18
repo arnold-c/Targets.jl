@@ -12,6 +12,8 @@ function Targets.write_value(f::ArrowFormat, path::AbstractString, value)
     return Arrow.write(path, value; compress = f.compress)
 end
 
-Targets.read_value(::ArrowFormat, path::AbstractString) = Arrow.Table(path)
+# Read into memory rather than memory-mapping: Windows cannot remove or replace
+# a mapped file, so a read object would block its own rebuild.
+Targets.read_value(::ArrowFormat, path::AbstractString) = Arrow.Table(read(path))
 
 end
