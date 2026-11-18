@@ -83,7 +83,9 @@ and what targets must avoid when they run concurrently.
 By default an error stops the build: nothing new starts, jobs that are already running
 finish and are recorded, and then the error is rethrown. With `keep_going = true`, targets
 that do not depend on a failed one are still built, the failed targets' descendants are
-blocked, and nothing is rethrown: the [`BuildSummary`](@ref) lists what failed. To make
+blocked, and nothing is rethrown. The [`BuildSummary`](@ref) then reports every failure:
+`errored` names the failed targets, and `errors` maps each failed target or branch
+(`"name/id"`) to its error message; the log ends with the same list. To make
 that the default for a project, set the `on_error` preference in its
 `LocalPreferences.toml` (an explicit `keep_going` still wins):
 

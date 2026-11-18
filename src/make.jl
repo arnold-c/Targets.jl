@@ -5,7 +5,9 @@ Names of targets that were `built`, found up to date (`skipped`), failed
 (`errored`) or not attempted because an upstream target failed (`blocked`),
 each in build order. `branches` maps each branching target to the ids of the
 branches that were (re)built in this run, and `trimmed` each `error = :trim`
-target to the ids of the failed branches left out of its value.
+target to the ids of the failed branches left out of its value. `errors` maps
+the key of every target (`"name"`) and branch (`"name/id"`) that failed in
+this run to its error message.
 """
 struct BuildSummary
     built::Vector{Symbol}
@@ -14,6 +16,7 @@ struct BuildSummary
     blocked::Vector{Symbol}
     branches::Dict{Symbol, Vector{String}}
     trimmed::Dict{Symbol, Vector{String}}
+    errors::Dict{String, String}
 end
 BuildSummary() = BuildSummary(
     Symbol[],
@@ -22,6 +25,7 @@ BuildSummary() = BuildSummary(
     Symbol[],
     Dict{Symbol, Vector{String}}(),
     Dict{Symbol, Vector{String}}(),
+    Dict{String, String}(),
 )
 
 function Base.show(io::IO, s::BuildSummary)
@@ -37,6 +41,7 @@ function Base.show(io::IO, s::BuildSummary)
         s.blocked,
         isempty(s.branches) ? "" : ", branches = " * string(s.branches),
         isempty(s.trimmed) ? "" : ", trimmed = " * string(s.trimmed),
+        isempty(s.errors) ? "" : ", errors = " * string(s.errors),
         ")",
     )
 end
@@ -271,7 +276,9 @@ Build the targets of `p` that are outdated, in dependency order, and return a
 depend on are considered. With `force = true`, all of those are rebuilt whatever
 their status. An error stops the run and is rethrown, unless `keep_going` is
 set, in which case independent targets are still built, the failed targets'
-descendants are blocked, and the failures are reported in the summary. Without
+descendants are blocked, and every failure is returned in the summary: its
+`errors` maps each failed target or branch to its message, and the log ends
+with the same list. Without
 `keep_going`, it is the `on_error` preference of Targets: `"stop"` (the
 default) or `"continue"` (keep going). Set it for a project in
 `LocalPreferences.toml`:
@@ -405,6 +412,7 @@ function build_pipeline(
     end
     sm = sort_summary!(ctx.summary, p)
     isempty(sm.errored) && record_manifest!(s, rootdir)
+    log_errors!(ctx)
     log!(
         ctx,
         "summary: $(length(sm.built)) built, $(length(sm.skipped)) up to date, " *
@@ -412,6 +420,17 @@ function build_pipeline(
             (isempty(ctx.warned) ? "" : ", $(length(ctx.warned)) with warnings"),
     )
     return sm
+end
+
+"List every failure of the run once more, in build order, so they can be read together."
+function log_errors!(ctx::BuildContext)
+    errors = ctx.summary.errors
+    isempty(errors) && return nothing
+    position = Dict(name => i for (i, name) in enumerate(ctx.pipeline.order))
+    keys_in_order = sort!(collect(keys(errors)); by = k -> (position[target_of(k)], k))
+    log!(ctx, "failures in this run:")
+    foreach(k -> log!(ctx, error_line(k, errors[k])), keys_in_order)
+    return nothing
 end
 
 default_script() = joinpath(project_root(), "_targets.jl")
@@ -467,6 +486,7 @@ function write_summary(path::AbstractString, s::BuildSummary)
     d = Dict{String, Any}(string(f) => string.(getfield(s, f)) for f in SUMMARY_LISTS)
     d["branches"] = Dict(string(k) => v for (k, v) in s.branches)
     d["trimmed"] = Dict(string(k) => v for (k, v) in s.trimmed)
+    d["errors"] = s.errors
     open(io -> TOML.print(io, d), path, "w")
 end
 
@@ -477,7 +497,8 @@ function read_summary(path::AbstractString)
         Symbol(k) => Vector{String}(v)
         for (k, v) in get(d, key, Dict())
     )
-    return BuildSummary(lists..., ids("branches"), ids("trimmed"))
+    errors = Dict{String, String}(get(d, "errors", Dict()))
+    return BuildSummary(lists..., ids("branches"), ids("trimmed"), errors)
 end
 
 """
@@ -637,7 +658,7 @@ function commit!(ctx::BuildContext, r::JobResult; keep_going::Bool)
     job.branch > 0 && return commit_branch!(ctx, r; keep_going)
     t = job.target
     if failed(r)
-        record_failure!(ctx, t, r.exception; backtrace = r.backtrace)
+        record_job_failure!(ctx, r)
         push!(ctx.summary.errored, t.name)
         event!(ctx, t.name, :errored; r.seconds)
         log!(ctx, done_line(r))
@@ -672,6 +693,14 @@ function log_start!(ctx::BuildContext, job::Job)
     event!(ctx, job.key, :started)
     write_log(ctx.store, start_line(job))
     started!(ctx.display, job)
+    return nothing
+end
+
+"Record a failed job in its target's (or branch's) metadata and in the run's summary."
+function record_job_failure!(ctx::BuildContext, r::JobResult)
+    job = r.job
+    record_failure!(ctx, job.target, r.exception; key = job.key, r.backtrace)
+    ctx.summary.errors[job.key] = error_message(r.exception)
     return nothing
 end
 
@@ -825,6 +854,15 @@ end
         @test s.blocked == [:after_bad]
         @test s.built == [:good, :after_good]
         @test read_values(dir, :after_good) == (2,)
+        # every error of the run is returned, and listed again at the end of the log
+        @test s.errors == Dict("bad" => "nope")
+        @test occursin("errors = ", repr(s))
+        log = read(joinpath(dir, "_targets", "log", "progress.log"), String)
+        @test occursin("failures in this run:\n✖ bad: nope\nsummary:", log)
+        path = tempname()
+        Targets.write_summary(path, s)
+        @test Targets.read_summary(path).errors == s.errors
+        @test isempty(build_source(code, dir; keep_going = true, names = [:good]).errors)
     end
 end
 

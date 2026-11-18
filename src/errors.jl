@@ -240,7 +240,7 @@ function tar_rerun(
     root::Union{Nothing, AbstractString} = nothing,
 )
     ws = load_workspace(as_store(store), key)
-    t = get_target(p, Symbol(first(split(string(key), '/'))))
+    t = get_target(p, target_of(key))
     isempty(ws["unsaved"]) ||
         @warn "these arguments could not be saved and are passed as `nothing`" ws["unsaved"]
     args = collect(Any, values(ws["args"]))

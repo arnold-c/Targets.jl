@@ -250,8 +250,10 @@ parameters are not supported.
 - `names = [:model]` builds those targets and everything they depend on; a `tar_map`
   template name stands for all of its targets.
 - `force = true` rebuilds the selection (or everything) whatever its status.
-- `keep_going = true` carries on with independent targets after a failure; the default
-  is the project's `on_error` preference (see below), else `false`.
+- `keep_going = true` carries on with independent targets after a failure and returns
+  every error in the summary (`errors` maps each failed target or branch to its
+  message); the default is the project's `on_error` preference (see below), else
+  `false`.
 - `fresh = true` builds in a new Julia process with the same project, so nothing from
   your session (code loaded before you edited it, globals or methods changed at the REPL,
   packages the script does not load) can affect the results. It costs a Julia start-up

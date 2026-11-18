@@ -255,7 +255,7 @@ function commit_branch!(ctx::BuildContext, r::JobResult; keep_going::Bool)
     job = r.job
     t = job.target
     if failed(r)
-        record_failure!(ctx, t, r.exception; key = job.key, backtrace = r.backtrace)
+        record_job_failure!(ctx, r)
         event!(ctx, job.key, :errored; r.seconds)
     else
         write_meta(ctx.store, job.key, job_record(r))
@@ -548,6 +548,8 @@ end
         @test s.errored == [:fits]
         @test s.blocked == [:after]
         @test length(s.branches[:fits]) == 2 # the other branches were built
+        key = only(keys(s.errors))           # the failed branch, by its key
+        @test startswith(key, "fits/") && s.errors[key] == "bad"
         @test_throws ErrorException build_source(
             code("[1, 2, 3]"),
             dir,

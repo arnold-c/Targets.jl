@@ -39,8 +39,11 @@ start_line(job::Job) = "▶ $(job.key) ($(job.reason))"
 
 "The log line of a finished job: green when it was built, red when it failed."
 done_line(r::JobResult) = failed(r) ?
-    styled"{error:✖ $(r.job.key): $(error_message(r.exception; limit = 200))}" :
+    error_line(r.job.key, error_message(r.exception)) :
     styled"{success:✔ $(r.job.key) $(round(r.seconds; digits = 2))s ($(r.job.reason))}"
+
+"The log line of a failure of target or branch `key`, in red."
+error_line(key, message::AbstractString) = styled"{error:✖ $key: $(first(message, 200))}"
 
 ## The display interface, and plain lines
 
@@ -322,7 +325,8 @@ end
         @test !occursin("▶", out)
         @test endswith(
             out,
-            "\e[?25h" * "summary: 2 built, 0 up to date, 1 errored, 0 blocked\n",
+            "\e[?25h" * "failures in this run:\n✖ bad: boom\n" *
+                "summary: 2 built, 0 up to date, 1 errored, 0 blocked\n",
         )
         # the log file keeps every line
         log = read(joinpath(dir, "_targets", "log", "progress.log"), String)

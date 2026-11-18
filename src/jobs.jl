@@ -58,6 +58,9 @@ JobResult(job, value, value_hash, stored, seconds, exception, backtrace) = JobRe
 
 failed(r::JobResult) = r.exception !== nothing
 
+"The target of job key `key`: `\"name\"` for a target, `\"name/id\"` for a branch."
+target_of(key) = Symbol(first(split(string(key), '/')))
+
 """
     BranchProgress
 
